@@ -1,14 +1,23 @@
-<!-- EN + PT-BR. See CONTRIBUTING.md / Veja o CONTRIBUTING.md. -->
+## Qué
 
-### What and why / O que e por quê
+<!-- ¿Qué cambia este PR? Una o dos frases, con palabras llanas. Sin números de spec, requisito o tarea. -->
 
+Closes #
 
-### Tested / Testado
-<!-- Profiles you ran (not --all) and their result / Perfis que você rodou (não o --all) e o resultado.
-     e.g. `python tools\run_game.py fase_direta` -> ok (timeout, 1450 frames, events gameplay_ready) -->
-- [ ] `python tools\run_game.py <profile>` ...
+## Por qué
 
-### Checklist
-- [ ] No game-derived files (xex, image.bin, rcf, assets, generated/, private/, dist/, captures) / Nenhum arquivo derivado do jogo (`python tools\check_game_files.py --all` passes)
-- [ ] `runtime/NOTES.md`, the GUIA section and `docs/internals/` updated if I found new addresses, hooks or traps / atualizados se achei endereços, hooks ou armadilhas novos
-- [ ] Branch is up to date with `main` / Branch atualizada com o `main`
+<!-- ¿Por qué hace falta? Una o dos frases. El detalle interno se queda en las notas privadas. -->
+
+## Cómo probarlo
+
+<!-- Pasos para que otra persona lo compruebe. -->
+
+1.
+
+## Lista de comprobación
+
+- [ ] Probado en UAT (o en local, si todavía no hay UAT)
+- [ ] El CI está en verde
+- [ ] Sin secretos ni datos personales en el diff
+- [ ] Docs o ADR actualizados si se tomó una decisión técnica
+- [ ] Este PR hace una sola cosa

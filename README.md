@@ -1,3 +1,55 @@
+# crashott-dx12: a Direct3D 12 renderer for CrashRecomp
+
+**[Español abajo](#español)**
+
+A fork of [CrashRecomp](https://github.com/VitoMiguelF/crashott-pc) (v1.07) that adds a **Direct3D 12**
+renderer next to the original Vulkan one, chosen in the launcher. Everything else (the recompiled game,
+audio, input, saves, the PC improvements) is the original project's.
+
+Why: some PCs have no working Vulkan driver, and many PC tools and mods (ReShade add-ons, upscaler
+swappers) only hook into Direct3D games.
+
+**Scope**
+- A `renderer = "vulkan" | "d3d12"` setting, in `settings.toml` and the launcher. Vulkan stays the default.
+- The D3D12 renderer draws everything the Vulkan one does: menus, videos, gameplay, the lighting remaster,
+  SMAA / FXAA, the overlay and screenshots.
+- DLSS and FSR 3.1 on D3D12.
+- Checking that ReShade-based mods load on the D3D12 build.
+
+**Out of scope**
+- Changes to the game, its recompiled code or its assets.
+- Linux / Steam Deck builds (Vulkan only, as upstream).
+- Following upstream past v1.07, until the D3D12 renderer is complete.
+- Distributing the game, its files or any mod. You need your own copy of the game, as upstream.
+
+**Status:** in development. The original project's README follows below.
+
+## Español
+
+Un fork de [CrashRecomp](https://github.com/VitoMiguelF/crashott-pc) (v1.07) que añade un renderizador
+**Direct3D 12** junto al Vulkan original, a elegir en el launcher. Todo lo demás (el juego recompilado, el
+audio, el mando, las partidas, las mejoras de PC) es del proyecto original.
+
+Por qué: algunos PC no tienen un driver de Vulkan que funcione, y muchas herramientas y mods de PC (add-ons
+de ReShade, sustitutos de reescaladores) solo se enganchan a juegos Direct3D.
+
+**Alcance**
+- Una opción `renderer = "vulkan" | "d3d12"`, en `settings.toml` y en el launcher. Vulkan sigue por defecto.
+- El renderizador D3D12 dibuja todo lo que dibuja el de Vulkan: menús, vídeos, partida, la remasterización
+  de luz, SMAA / FXAA, el overlay y las capturas.
+- DLSS y FSR 3.1 en D3D12.
+- Comprobar que los mods basados en ReShade cargan con la versión D3D12.
+
+**Fuera de alcance**
+- Cambios en el juego, su código recompilado o sus recursos.
+- Versiones para Linux / Steam Deck (solo Vulkan, como el original).
+- Seguir al proyecto original más allá de v1.07 hasta terminar el renderizador D3D12.
+- Distribuir el juego, sus archivos o cualquier mod. Hace falta tu propia copia del juego, como en el original.
+
+**Estado:** en desarrollo. Debajo sigue el README del proyecto original.
+
+---
+
 # CrashRecomp: Crash of the Titans, Definitive Edition (PC)
 
 A native Windows port of **Crash of the Titans** (Xbox 360), made by statically recompiling the game's

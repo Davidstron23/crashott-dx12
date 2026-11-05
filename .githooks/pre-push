@@ -1,0 +1,16 @@
+#!/bin/sh
+# Local lock: blocks any direct push to main. Copy to .githooks/pre-push and activate with:
+#   git config core.hooksPath .githooks
+#   git update-index --chmod=+x .githooks/pre-push
+# Limit: `git push --no-verify` skips it. It guards against slips, not against yourself.
+
+protected_branch="main"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$remote_ref" = "refs/heads/$protected_branch" ]; then
+    echo "Direct push to $protected_branch is blocked. Push a branch and open a PR."
+    exit 1
+  fi
+done
+
+exit 0
