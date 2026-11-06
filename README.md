@@ -22,6 +22,19 @@ swappers) only hook into Direct3D games.
 - Following upstream past v1.07, until the D3D12 renderer is complete.
 - Distributing the game, its files or any mod. You need your own copy of the game, as upstream.
 
+**Development** (Windows): install CrashRecomp v1.07 with its installer, clone this fork and run
+
+```bat
+python tools\dev_setup.py
+```
+
+It links the folders made from your game (`private\`, `generated\`, `data\`) and the toolchain from the
+installation instead of copying them, copies the third-party files, turns on the git hooks, builds
+`build\` and makes `dist\`, a test copy with its own saves and settings that reads the game from the
+installation. Play the new build with `dist\CrashLauncher.exe`; run the automated tests with
+`python tools\run_game.py <profile>` (`--list`). `--install <folder>` if the game is not in the default
+folder. Never delete the linked folders with `rm -rf` or `git clean -x`: use `rmdir <folder>`.
+
 **Status:** in development. The original project's README follows below.
 
 ## Español
@@ -45,6 +58,19 @@ de ReShade, sustitutos de reescaladores) solo se enganchan a juegos Direct3D.
 - Versiones para Linux / Steam Deck (solo Vulkan, como el original).
 - Seguir al proyecto original más allá de v1.07 hasta terminar el renderizador D3D12.
 - Distribuir el juego, sus archivos o cualquier mod. Hace falta tu propia copia del juego, como en el original.
+
+**Desarrollo** (Windows): instala CrashRecomp v1.07 con su instalador, clona este fork y ejecuta
+
+```bat
+python tools\dev_setup.py
+```
+
+Enlaza desde la instalación las carpetas hechas a partir de tu juego (`private\`, `generated\`, `data\`) y
+el toolchain en vez de copiarlas, copia los archivos de terceros, activa los hooks de git, compila
+`build\` y monta `dist\`, una copia de prueba con sus propias partidas y opciones que lee el juego de la
+instalación. Juega la versión nueva con `dist\CrashLauncher.exe`; las pruebas automáticas, con
+`python tools\run_game.py <perfil>` (`--list`). `--install <carpeta>` si el juego no está en la carpeta
+por defecto. Nunca borres las carpetas enlazadas con `rm -rf` ni `git clean -x`: usa `rmdir <carpeta>`.
 
 **Estado:** en desarrollo. Debajo sigue el README del proyecto original.
 
