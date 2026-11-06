@@ -1,0 +1,64 @@
+# Checks for every pull request and every push to main. The runners never have a game file:
+# the build job compiles only the installer and the launcher (no recompiled game code), and the
+# "No game files" workflow (check-game-files.yml) refuses anything derived from the game.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-installer:
+    name: Build installer and launcher (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # The bundled toolchain (llvm-mingw, CMake, Ninja, Python), ~300 MB: kept between runs
+      # until tools/toolchain.py changes the pinned versions.
+      - uses: actions/cache@v6
+        with:
+          path: toolchain
+          key: toolchain-windows-${{ hashFiles('tools/toolchain.py') }}
+
+      # fetch always downloads again: only when the cached copy is incomplete.
+      - name: Fetch the toolchain
+        run: python tools/toolchain.py check || python tools/toolchain.py fetch
+
+      # Configures build\ without recompiled game code (CRASH_INSTALLER_ONLY) and builds CrashSetup.
+      - name: Build the installer
+        run: python tools/setup.py --installer-only
+
+      - name: Build the launcher
+        run: |
+          $env:PATH = "$PWD\toolchain\llvm-mingw\bin;$PWD\toolchain\cmake\bin;$PWD\toolchain\ninja;$env:PATH"
+          cmake --build build --target CrashLauncher
+
+  secrets-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    # On a pull request, gitleaks lists its commits through the API: it needs to read pull requests.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history, so gitleaks scans every commit
+
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false # a finding fails the check; no PR comments (they need write access)
