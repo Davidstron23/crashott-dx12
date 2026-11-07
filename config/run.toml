@@ -251,6 +251,139 @@ restart_input = [["@main_menu"], [2, "SHOT"]]
 restart_timeout = 12
 expect = { exit = ["timeout"], restarts = 1, events = ["main_menu#2"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on', 'restart needed for IDIOMA', 'restart accepted', 'exiting with code 4', 'restarted from the settings screen', '\[gpu\] renderer requested: vulkan \(settings\.toml\)', '\[gpu\] Vulkan renderer on'] }
 
+# Spec 001, T5 (a fila RENDERIZADOR de SETTINGS). Chegam a SETTINGS como renderizador_reinicio_limpa (CRASH_MENU_AUTOPILOT, e fps_limit = 30 para os apertos
+# nao se perderem). Dentro de SETTINGS (abre na aba JOGO): RB x2 = VÍDEO; DOWN x8 = RENDERIZADOR (9ª e última linha); as teclas do input chegam como mensagens de janela.
+# O input é relativo a @main_menu: o autopilot leva ~6,4 s depois dele para abrir SETTINGS, por isso o primeiro toque só aos 9 s.
+[profiles.renderizador_reinicio]
+description = "SETTINGS > VÍDEO > RENDERIZADOR: RIGHT, LEFT, RIGHT, sai e aceita o reinício; o jogo reaberto usa o renderizador salvo no settings.toml"
+test = true
+timeout = 45
+audio = false
+userdata_mode = "copy"
+skip_intros = true
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_SETTINGS = "video.fps_limit=30" }
+input = [
+    ["@main_menu"], [9, "RB"], [9.6, "RB"],
+    [10.2, "DOWN"], [10.6, "DOWN"], [11, "DOWN"], [11.4, "DOWN"], [11.8, "DOWN"], [12.2, "DOWN"], [12.6, "DOWN"], [13, "DOWN"],
+    [13.6, "RIGHT"], [14.2, "LEFT"], [14.8, "RIGHT"], [15.6, "SHOT"], [16.2, "B"], [18, "SHOT"], [19, "A"],
+]
+restart_env = { CRASH_MENU_AUTOPILOT = "" }
+restart_input = [["@main_menu"], [2, "SHOT"]]
+restart_timeout = 12
+expect = { exit = ["timeout"], restarts = 1, events = ["main_menu#2"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back'], log_contains = ['video\.renderer -> DIRECT3D 12', 'video\.renderer -> VULKAN', 'restart needed for RENDERER', 'restart accepted \(RENDERER\)', 'exiting with code 4', 'restarted from the settings screen', 'renderer requested: d3d12 \(settings\.toml\)', 'Direct3D 12 renderer on'] }
+
+[profiles.renderizador_sin_cambio]
+description = "SETTINGS > VÍDEO > RENDERIZADOR: RIGHT e LEFT (volta ao valor de antes) e sai: sem pergunta de reinício"
+test = true
+timeout = 30
+audio = false
+userdata_mode = "copy"
+skip_intros = true
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_SETTINGS = "video.fps_limit=30" }
+input = [
+    ["@main_menu"], [9, "RB"], [9.6, "RB"],
+    [10.2, "DOWN"], [10.6, "DOWN"], [11, "DOWN"], [11.4, "DOWN"], [11.8, "DOWN"], [12.2, "DOWN"], [12.6, "DOWN"], [13, "DOWN"],
+    [13.6, "RIGHT"], [14.2, "LEFT"], [14.8, "SHOT"], [15.4, "B"], [17.5, "SHOT"],
+]
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'restart needed', 'apply on the next launch', 'restart accepted'], log_contains = ['video\.renderer -> DIRECT3D 12', 'video\.renderer -> VULKAN', '\[settings\] screen closed'] }
+
+# RF-18: sem reinício automático (CRASH_RESTART=off, que o run_game deixa o perfil trocar): fecha com B, sem pergunta; a mudança vale no próximo arranque.
+[profiles.renderizador_reinicio_apagado]
+description = "CRASH_RESTART=off: trocar o RENDERIZADOR e sair não pergunta nem reinicia; o log diz que vale no próximo arranque"
+test = true
+timeout = 30
+audio = false
+userdata_mode = "copy"
+skip_intros = true
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_SETTINGS = "video.fps_limit=30", CRASH_RESTART = "off" }
+input = [
+    ["@main_menu"], [9, "RB"], [9.6, "RB"],
+    [10.2, "DOWN"], [10.6, "DOWN"], [11, "DOWN"], [11.4, "DOWN"], [11.8, "DOWN"], [12.2, "DOWN"], [12.6, "DOWN"], [13, "DOWN"],
+    [13.6, "RIGHT"], [14.4, "SHOT"], [15, "B"], [17.5, "SHOT"],
+]
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'restart needed', 'restart accepted'], log_contains = ['video\.renderer -> DIRECT3D 12', '\[settings\] RENDERER apply on the next launch', '\[settings\] screen closed'] }
+
+# RF-17: B na pergunta ("depois") fecha sem reiniciar e o valor fica salvo; ao reabrir SETTINGS o valor de abertura já é o novo (g_rendererAtOpen): fecha sem nova pergunta.
+# Depois de fechar, o cursor do menu principal volta ao primeiro item: DOWN x3, A reabrem SETTINGS.
+[profiles.renderizador_reinicio_recusado]
+description = "SETTINGS > VÍDEO > RENDERIZADOR muda, B na pergunta (depois): sem reinício, o valor fica salvo e, ao reabrir SETTINGS, fecha sem nova pergunta"
+test = true
+timeout = 40
+audio = false
+userdata_mode = "copy"
+skip_intros = true
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_SETTINGS = "video.fps_limit=30" }
+input = [
+    ["@main_menu"], [9, "RB"], [9.6, "RB"],
+    [10.2, "DOWN"], [10.6, "DOWN"], [11, "DOWN"], [11.4, "DOWN"], [11.8, "DOWN"], [12.2, "DOWN"], [12.6, "DOWN"], [13, "DOWN"],
+    [13.6, "RIGHT"], [14.2, "B"], [15, "SHOT"], [15.6, "B"], [18, "SHOT"],
+    [18.6, "DOWN"], [19.4, "DOWN"], [20.2, "DOWN"], [21, "A"],
+    [23, "SHOT"], [23.6, "RB"], [24.2, "RB"], [25, "SHOT"], [25.6, "B"], [28, "SHOT"],
+]
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu#2"], log_absent = ['\[fatal\]', '\[crash\]', 'restart accepted', 'exiting with code'], log_contains = ['video\.renderer -> DIRECT3D 12', 'restart needed for RENDERER: asking', 'restart declined', '\[settings\] RENDERER apply on the next launch', '(?s)screen closed.*screen opened.*screen closed'] }
+
+# RF-17 com outra opção que também pede reinício: a pergunta lista as duas.
+[profiles.renderizador_reinicio_junto]
+description = "SETTINGS: IDIOMA (PT-BR) e RENDERIZADOR mudam: a pergunta de reinício lista as duas opções"
+test = true
+timeout = 30
+audio = false
+userdata_mode = "copy"
+skip_intros = true
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_SETTINGS = "video.fps_limit=30" }
+input = [
+    ["@main_menu"], [9, "LEFT"], [9.6, "RB"], [10.2, "RB"],
+    [10.8, "DOWN"], [11.2, "DOWN"], [11.6, "DOWN"], [12, "DOWN"], [12.4, "DOWN"], [12.8, "DOWN"], [13.2, "DOWN"], [13.6, "DOWN"],
+    [14.2, "RIGHT"], [14.8, "B"], [16, "SHOT"], [17, "B"], [19, "SHOT"],
+]
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'restart accepted'], log_contains = ['game\.language -> PORTUGU', 'video\.renderer -> DIRECT3D 12', 'restart needed for IDIOMA, RENDERIZADOR: asking', 'restart declined'] }
+
+# RF-16, RF-21, RF-25: SETTINGS desenhado pelo Direct3D 12 (camada sobre preto) com o fsr/smaa/iluminação do settings.toml; muda a resolução e o upscaler e sai
+# (o renderer "reconfigura": com D3D12 não há alvos que recriar); o jogo segue.
+[profiles.renderizador_d3d12_ajustes]
+description = "SETTINGS desenhado com Direct3D 12: resolução e upscaler mudam, B fecha sem travar, o settings.toml guarda o renderer e o jogo segue"
+test = true
+timeout = 40
+audio = false
+userdata_mode = "copy"
+userdata_from = "tests/userdata_renderer/d3d12_full"
+screenshot_overlay = true
+skip_intros = true
+renderer = "d3d12"
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_RESTART = "off" }
+input = [
+    ["@main_menu"], [9, "RB"], [9.6, "RB"], [10.2, "SHOT"],
+    [10.8, "DOWN"], [11.4, "RIGHT"], [12, "RIGHT"], [12.6, "RB"], [13.2, "SHOT"], [13.8, "RIGHT"], [14.4, "SHOT"], [15, "B"], [18, "SHOT"], [24, "SHOT"],
+]
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], min_frames = 900, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'restart needed'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on', 'Direct3D 12: GPU .* by the launcher.s rule: DLSS (yes|no), FSR (yes|no)', 'video\.resolution -> 1920x1080', 'graphics\.upscaler ->', '\[settings\] renderer options changed: applying them now', '\[gpu\] reconfigured: internal resolution 1920x1080', '\[settings\] screen closed'] }
+
+# RF-32: com Direct3D 12 e uma GPU que a regra do launcher dá por não NVIDIA, o DLSS guardado sai em cinza e o RIGHT/LEFT não volta a ele.
+[profiles.renderizador_d3d12_dlss_cinza]
+description = "Direct3D 12 + CRASH_GPU_VENDOR=amd + dlss guardado: SETTINGS mostra DLSS (REQUIRES NVIDIA RTX) em cinza e, sem tocar a linha, o settings.toml segue com dlss"
+test = true
+timeout = 30
+audio = false
+userdata_mode = "copy"
+userdata_from = "tests/userdata_renderer/d3d12_dlss"
+skip_intros = true
+renderer = "d3d12"
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_RESTART = "off", CRASH_GPU_VENDOR = "amd" }
+input = [["@main_menu"], [9, "RB"], [9.6, "RB"], [10.2, "RB"], [11.5, "SHOT"], [12, "B"], [14, "SHOT"]]
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'graphics\.upscaler ->'], log_contains = ['Direct3D 12: GPU .* \(AMD, CRASH_GPU_VENDOR\) by the launcher.s rule: DLSS no, FSR yes', 'Direct3D 12: upscaler dlss off \(Vulkan only for now\); settings\.toml keeps it', '\[settings\] screen closed'] }
+
+[profiles.renderizador_d3d12_dlss_salta]
+description = "Direct3D 12 + CRASH_GPU_VENDOR=amd + dlss guardado: LEFT/RIGHT na linha do upscaler pulam o DLSS (FSR e OFF, nunca DLSS)"
+test = true
+timeout = 30
+audio = false
+userdata_mode = "copy"
+userdata_from = "tests/userdata_renderer/d3d12_dlss"
+skip_intros = true
+renderer = "d3d12"
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_RESTART = "off", CRASH_GPU_VENDOR = "amd" }
+input = [["@main_menu"], [9, "RB"], [9.6, "RB"], [10.2, "RB"], [11, "RIGHT"], [11.6, "SHOT"], [12.2, "LEFT"], [12.8, "LEFT"], [13.4, "SHOT"], [14, "LEFT"], [14.6, "RIGHT"], [15.2, "RIGHT"], [15.8, "RIGHT"], [16.4, "B"], [18, "SHOT"]]
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'graphics\.upscaler -> DLSS'], log_contains = ['DLSS no, FSR yes', 'graphics\.upscaler -> FSR 3\.1', 'graphics\.upscaler -> OFF', '\[settings\] screen closed'] }
+
 [profiles.menu]
 description = "Pula as intros (skip_intros: sem vídeos de logo e sem tela de título) e chega ao menu principal com música"
 test = true
