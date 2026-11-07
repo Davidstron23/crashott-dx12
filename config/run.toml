@@ -149,6 +149,33 @@ renderer = "d3d12"
 env = { CRASH_D3D12_FAIL = "foo" }
 expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'fails on purpose'], log_contains = ['\[gpu\] CRASH_D3D12_FAIL=foo ignored \(device \| shaders\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+'] }
 
+# Spec 001, T2 (DXIL): com o Direct3D 12, a camada do port (overlay, avisos) sai sobre preto. O que o log diz (DXIL assinado pelo dxil.dll, os
+# 2 pipelines e os 4 compiles DXIL sem falha, nenhum erro de pipeline) se confere aqui; as capturas se comparam fora (overlay no mesmo lugar
+# e com o mesmo texto que com --set renderer=vulkan, preto fora do painel). Sem dxil.dll ao lado do exe o perfil falha de propósito.
+[profiles.renderizador_d3d12_overlay]
+description = "renderer=d3d12 com overlay nas capturas: shaders DXIL assinados, present e overlay criados, sem voltar ao Vulkan"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+screenshots = [300, 540]
+renderer = "d3d12"
+overlay = true
+screenshot_overlay = true
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'could not create', 'failed to compile', 'DXIL NOT signed', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12: DXIL signed by dxil\.dll', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[overlay\] mode full .*included in screenshots', '\[gpu\] d3d12: \d+ submits, 2 pass pipelines, 4 DXIL compiles \(0 failed\)'] }
+
+[profiles.renderizador_d3d12_aviso]
+description = "renderer=d3d12: o aviso SKIP VIDEO (camada do port, sem o overlay) aparece sobre preto na primeira abertura em vídeo; a captura sai 1 s depois do aviso"
+test = true
+timeout = 25
+audio = false
+userdata_mode = "copy"
+renderer = "d3d12"
+overlay = false
+env = { CRASH_SETTINGS = "controls.prompts=xbox" }
+input = [["@skip_prompt#1"], [1, "SHOT"]]
+expect = { exit = ["timeout"], events = ["skip_prompt"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'could not create', 'failed to compile', 'DXIL NOT signed'], log_contains = ['\[gpu\] Direct3D 12: DXIL signed by dxil\.dll', '\[gpu\] d3d12: \d+ submits, 2 pass pipelines, 4 DXIL compiles \(0 failed\)'] }
+
 [profiles.menu]
 description = "Pula as intros (skip_intros: sem vídeos de logo e sem tela de título) e chega ao menu principal com música"
 test = true
