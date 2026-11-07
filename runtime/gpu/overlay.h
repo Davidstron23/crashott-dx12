@@ -30,6 +30,9 @@ namespace gpu::overlay
     // false (and logs why) if the overlay cannot be drawn; the counters, marks and frame stats still work.
     bool Init(rhi::Device* device, DXGI_FORMAT format, const std::filesystem::path& outputDir);
 
+    // The overlay's pipeline can be created on `device` (Direct3D 12's start-up check, xenos_renderer); nothing else is set up.
+    bool PipelineCompiles(rhi::Device* device, DXGI_FORMAT format);
+
     // Once per swap, before drawing: frame timing, F1 and F2.
     void BeginFrame(uint64_t frame);
     bool Visible();  // mode other than off

@@ -272,6 +272,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             }
 
             bool Init(const DeviceInfo& info);
+            void FailShaders() { m_failShaders = true; }
 
             const std::string& AdapterName() const override { return m_adapterName; }
 
@@ -383,6 +384,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             // The presenter's pipelines, kept for the device's life.
             std::vector<std::unique_ptr<D3D12Pipeline>> m_passPipelines;
             std::vector<uint8_t> m_fullscreenVs;  // DXIL of FULLSCREEN_VS
+            bool m_failShaders = false;           // CRASH_D3D12_FAIL=shaders (spec 001): every pass pipeline fails, to see the fallback to Vulkan
 
             // Buffers given back by the renderer, released once the GPU is past the last submission that may use them.
             struct Garbage
@@ -590,6 +592,16 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         Pipeline* D3D12Device::CreatePassPipeline(const PassPipelineDesc& desc)
         {
+            if (m_failShaders)
+            {
+                static bool logged = false;
+                if (!logged)
+                {
+                    logged = true;
+                    Log("[gpu] Direct3D 12: %s: shader compilation failed on purpose", desc.name.c_str());
+                }
+                return nullptr;
+            }
             auto pipeline = std::make_unique<D3D12Pipeline>();
             pipeline->textureCount = desc.textureCount;
             pipeline->bufferInput = desc.bufferInput;
@@ -985,7 +997,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
     Device* CreateD3D12(const DeviceInfo& info)
     {
         // Test hook (spec 001): make the start fail on purpose, to see the fallback to Vulkan.
-        // "shaders" is for the DXIL task and does nothing yet.
+        bool failShaders = false;
         if (const char* fail = getenv("CRASH_D3D12_FAIL"); fail && *fail)
         {
             if (plat::CompareNoCase(fail, "device") == 0)
@@ -993,9 +1005,17 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 Log("[gpu] CRASH_D3D12_FAIL=device: Direct3D 12 fails on purpose");
                 return nullptr;
             }
-            Log("[gpu] CRASH_D3D12_FAIL=%s ignored (device | shaders)", fail);
+            if (plat::CompareNoCase(fail, "shaders") == 0)
+            {
+                Log("[gpu] CRASH_D3D12_FAIL=shaders: the Direct3D 12 shaders fail on purpose");
+                failShaders = true;
+            }
+            else
+                Log("[gpu] CRASH_D3D12_FAIL=%s ignored (device | shaders)", fail);
         }
         auto device = std::make_unique<D3D12Device>();
+        if (failShaders)
+            device->FailShaders();
         if (!device->Init(info))
             return nullptr;
         return device.release();

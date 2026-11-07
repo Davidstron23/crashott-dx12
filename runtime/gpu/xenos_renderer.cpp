@@ -3550,6 +3550,12 @@ float4 main(float4 position : SV_Position) : SV_Target
             return chosen;
         }
 
+        // The port's own shaders (the present pass and the overlay) build on the Direct3D 12 device.
+        bool PresenterShadersReady()
+        {
+            return GetPresentPipeline(g_rhi->BackBufferFormat()) && overlay::PipelineCompiles(g_rhi, g_rhi->BackBufferFormat());
+        }
+
         // Direct3D 12 for the window, or null (the backend logs why) so that Init falls back to Vulkan.
         rhi::Device* StartD3D12(const rhi::DeviceInfo& info)
         {
@@ -3557,7 +3563,15 @@ float4 main(float4 position : SV_Position) : SV_Target
             rhi::Device* device = rhi::CreateD3D12(info);
             if (!device)
                 return nullptr;
-            g_rhi = device;
+            g_rhi = device;  // GetPresentPipeline uses g_rhi
+            if (!PresenterShadersReady())
+            {
+                Log("[gpu] Direct3D 12: the presenter's shaders did not compile or link");
+                g_presentPipelines.clear();  // owned by the device deleted below
+                delete device;               // waits for the GPU and releases the swap chain, so Vulkan can use the window
+                g_rhi = nullptr;
+                return nullptr;
+            }
             g_presenterOnly = true;
             return device;
 #else

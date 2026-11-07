@@ -333,7 +333,7 @@ float4 main(float4 position : SV_Position) : SV_Target
                 Graph(PAD + int(lines.size()) * LINE_H + 2);
         }
 
-        bool CreateResources(rhi::Device* device, DXGI_FORMAT format)
+        rhi::PassPipelineDesc PipelineDesc(DXGI_FORMAT format)
         {
             rhi::PassPipelineDesc desc;
             desc.name = "overlay";
@@ -343,7 +343,12 @@ float4 main(float4 position : SV_Position) : SV_Target
             desc.blend = rhi::Blend::Alpha;
             desc.bufferInput = true;
             desc.constantBytes = 32;
-            g_pipeline = device->CreatePassPipeline(desc);
+            return desc;
+        }
+
+        bool CreateResources(rhi::Device* device, DXGI_FORMAT format)
+        {
+            g_pipeline = device->CreatePassPipeline(PipelineDesc(format));
             if (!g_pipeline)
                 return false;
             g_upload = device->CreateBuffer(UPLOAD_SLICE_SIZE * UPLOAD_SLICES);
@@ -372,6 +377,11 @@ float4 main(float4 position : SV_Position) : SV_Target
             pass.constantBytes = sizeof(constants);
             g_device->DrawPass(pass);
         }
+    }
+
+    bool PipelineCompiles(rhi::Device* device, DXGI_FORMAT format)
+    {
+        return device->CreatePassPipeline(PipelineDesc(format)) != nullptr;
     }
 
     bool Init(rhi::Device* device, DXGI_FORMAT format, const std::filesystem::path& outputDir)
