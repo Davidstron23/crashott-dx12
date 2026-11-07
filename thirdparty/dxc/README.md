@@ -13,6 +13,10 @@ License** (`LICENSE.TXT` in that repository; the release zips carry it).
   SDK's `Bin/dxcompiler.dll` works too; the Windows SDK's copy has no SPIR-V backend and won't do.
   CMake copies it next to `CrashRecomp.exe` (from here, or from `%VULKAN_SDK%\Bin` when this folder
   has none).
+- `bin/dxil.dll` (not in git): the DXIL validator of the same release (`bin/x64/dxil.dll`, its own
+  pinned SHA-256). The Direct3D 12 renderer needs it next to the exe: `dxcompiler.dll` loads it to
+  sign the DXIL, and Direct3D 12 refuses unsigned shaders (`docs/decisions/0002-dxil-signing.md`).
+  `tools/setup.py` and `tools/dev_setup.py` fetch it; CMake copies it.
 
 Without it the Vulkan renderer can only use SPIR-V already in `userdata\shadercache\*.spv`; the
-Direct3D 12 renderer (FXC, `d3dcompiler_47.dll` from Windows) doesn't need it.
+Direct3D 12 renderer (HLSL to DXIL with the same DLL) can't start at all, and the game falls back to Vulkan.

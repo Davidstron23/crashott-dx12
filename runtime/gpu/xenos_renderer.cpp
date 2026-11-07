@@ -4187,7 +4187,9 @@ float4 main(float4 position : SV_Position) : SV_Target
             snprintf(tag, sizeof(tag), "swap %llu present source 0x%08X", (unsigned long long)g_stats.swaps, frontBuffer);
             g_rhi->Probe(present.textures[0].texture, tag);
         }
-        g_rhi->DrawPass(present);
+        // Presenter only (Direct3D 12): no image yet, and the pass would paint its "no source" pattern over the black bars.
+        if (!g_presenterOnly)
+            g_rhi->DrawPass(present);
         if (probing)
             g_rhi->Probe(backBuffer, "swap " + std::to_string(g_stats.swaps) + " back buffer");
         if (TracingSwap() && getenv("CRASH_GPU_DUMP_PRESENT"))

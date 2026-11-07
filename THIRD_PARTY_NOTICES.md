@@ -11,7 +11,7 @@ and why each license allows it:
   the exact source tag below (LGPL v3 section 4 / GPL v3 section 6(d): the source is offered from the
   network server named here); replaceable by the user (any compatible build of the same DLLs).
 - AMD FidelityFX SDK (MIT): the signed DLL and the `ffx_api` headers, with the license.
-- DirectX Shader Compiler: `dxcompiler.dll` is "distributable code" of Microsoft's license
+- DirectX Shader Compiler: `dxcompiler.dll` and `dxil.dll` are "distributable code" of Microsoft's license
   (`LICENSE-MS.txt`), shipped unmodified with its LLVM license.
 - NVIDIA DLSS (RTX SDKs license): only `nvngx_dlss.dll` and our `CrashDlss.dll`, which contains the NGX
   static library in object code form, "incorporated ... into a software application" (section 1.c);
@@ -29,7 +29,7 @@ and why each license allows it:
 | [NVIDIA DLSS](https://github.com/NVIDIA/DLSS) 310.9.16 (`nvngx_dlss.dll`, NGX SDK headers incl. the Vulkan ones, and `nvsdk_ngx_s.lib`, linked into our `CrashDlss.dll`) | DLSS Super Resolution / DLAA (NGX Vulkan API) | NVIDIA RTX SDKs License (`thirdparty/dlss/LICENSE.txt`) | tag `v310.9.16` |
 | [AMD FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 1.1.4 (FSR 3.1 upscaler: the signed `amd_fidelityfx_vk.dll` + `ffx_api` headers) | FSR 3.1 on Vulkan, loaded at run time | MIT (`thirdparty/fsr/license.md`) | tag `v1.1.4` (`PrebuiltSignedDLL/`, `ffx-api/include/ffx_api/`) |
 | [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) 1.4.363 | The Vulkan renderer (headers only; the system's `vulkan-1.dll` is loaded at run time) | Apache-2.0 OR MIT | from the LunarG Vulkan SDK 1.4.363.0 (in git, `thirdparty/vulkan`) |
-| [DirectXShaderCompiler](https://github.com/microsoft/DirectXShaderCompiler) (`dxcompiler.dll` with SPIR-V, `dxcapi.h`) | HLSL to SPIR-V for the Vulkan renderer, loaded at run time | Headers: University of Illinois/NCSA. The signed release binary: Microsoft DirectX Shader Compiler license (distributable code) + LLVM (`LICENSE-MS.txt`, `LICENSE-LLVM.txt` in `licencas\`) | headers in git (`thirdparty/dxc`); `bin/x64/dxcompiler.dll` of release `v1.9.2609` (`dxc_2026_09_29.zip`), downloaded by the installer |
+| [DirectXShaderCompiler](https://github.com/microsoft/DirectXShaderCompiler) (`dxcompiler.dll` with SPIR-V, `dxil.dll`, `dxcapi.h`) | HLSL to SPIR-V for the Vulkan renderer and to signed DXIL for the Direct3D 12 one, loaded at run time | Headers: University of Illinois/NCSA. The signed release binary: Microsoft DirectX Shader Compiler license (distributable code) + LLVM (`LICENSE-MS.txt`, `LICENSE-LLVM.txt` in `licencas\`) | headers in git (`thirdparty/dxc`); `bin/x64/dxcompiler.dll` and `bin/x64/dxil.dll` of release `v1.9.2609` (`dxc_2026_09_29.zip`), downloaded by the installer |
 | [SMAA](https://github.com/iryoku/smaa) | SMAA anti-aliasing | MIT (`thirdparty/smaa/LICENSE.txt`) | commit `71c806a838bdd7d517df19192a20f0c61b3ca29d` (in git) |
 | [Dear ImGui](https://github.com/ocornut/imgui) 1.91.8 | The launcher and the installer | MIT (`thirdparty/imgui/LICENSE.txt`) | tag `v1.91.8` (in git) |
 
