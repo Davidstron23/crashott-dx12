@@ -639,7 +639,8 @@ namespace
 
     void Change(Item item, int direction)
     {
-        opt::Change(item, g_values, direction, OptionContext());
+        if (opt::Change(item, g_values, direction, OptionContext()))
+            Log("[launcher] %s -> %s", opt::Key(item), Value(item).c_str());
     }
 
     // A (Enter, click): change forward, or the row's own action.
