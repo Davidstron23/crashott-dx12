@@ -57,6 +57,10 @@ namespace settings
 {
     enum class WindowMode : uint8_t { Windowed, Borderless, Fullscreen };
     enum class AntiAliasing : uint8_t { Off, Fxaa, Smaa };
+    // The graphics API of the renderer (gpu/renderer_choice.h): Vulkan is the default.
+    enum class Renderer : uint8_t { Vulkan, D3D12 };
+    // Where a renderer asked for in the settings came from: settings.toml, or CRASH_SETTINGS (an override).
+    enum class RendererOrigin : uint8_t { None, File, Override };
     // Temporal upscaling / anti-aliasing of the 3D scene (gpu/upscaler.h). With an upscaler on,
     // video.resolution is the output of the upscaler (the HUD and the post-processing are drawn
     // at it) and the 3D scene is drawn at that resolution times the quality's scale.
@@ -254,6 +258,9 @@ namespace settings
     const char* WindowModeName(WindowMode mode);
     const char* AspectName(Aspect aspect);                        // "auto", "16:9", "16:10", "21:9", "32:9"
     const char* AntiAliasingName(AntiAliasing mode);
+    const char* RendererName(Renderer renderer);                  // "vulkan", "d3d12"
+    // vulkan | vk, d3d12 | dx12 | directx12 (any case); false (renderer untouched) for null or any other text.
+    bool ParseRenderer(const char* text, Renderer& renderer);
     const char* UpscalerName(Upscaler upscaler);                  // "off", "dlss", "fsr"
     const char* UpscalerQualityName(UpscalerQuality quality);     // "native", "quality", ...
     // Scene resolution / output resolution of an upscaler quality (1, 0.667, 0.588, 0.5, 0.333).

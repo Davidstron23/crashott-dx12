@@ -456,6 +456,13 @@ def environment(settings, run_dir, profile=None):
         env["CRASH_AUDIO_DUMP_SECONDS"] = str(settings.get("audio_dump_seconds", 60))
     if settings.get("log_imports"):
         env["CRASH_LOG_IMPORTS"] = ",".join(settings["log_imports"])
+    # renderer: "" = what settings.toml says | "vulkan" | "d3d12" (CRASH_RENDERER, runtime/gpu/renderer_choice.h).
+    # The profile's own `env` goes after it, so it can set (or garble) CRASH_RENDERER itself.
+    renderer = settings.get("renderer")
+    if renderer:
+        if str(renderer).lower() not in ("vulkan", "d3d12"):
+            raise SystemExit(f"renderer = {renderer!r}: use vulkan ou d3d12")
+        env["CRASH_RENDERER"] = str(renderer).lower()
     for key, value in settings.get("env", {}).items():
         env[key] = str(value)
     # A restart from the settings screen exits with code 4 and the runner starts the game again

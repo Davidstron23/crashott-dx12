@@ -23,6 +23,7 @@
 // Register meanings and the resolve rectangle rules follow Xenia (BSD license).
 
 #include "renderer.h"
+#include "renderer_choice.h"
 #include "gpu.h"
 #include "rhi.h"
 #include "shader_warmup.h"
@@ -385,6 +386,9 @@ namespace gpu::renderer
         // Device: the graphics API backend (rhi.h) and the window.
         std::atomic<bool> g_active;
         rhi::Device* g_rhi = nullptr;
+        // Direct3D 12 (spec 001): only the port's layer (the present pass, the overlay, SETTINGS) is
+        // drawn; the game's draws are not sent to the backend (that is specs 002-003).
+        bool g_presenterOnly = false;
 
         // CRASH_GPU_PROFILE: what the GPU work recorded from here on is for (the label of its rows).
         __attribute__((format(printf, 1, 2))) void ProfileLabel(const char* format, ...)
@@ -3523,6 +3527,8 @@ float4 main(float4 position : SV_Position) : SV_Target
 
         bool CreatePassPipelines()
         {
+            if (g_presenterOnly)
+                return true;  // StartD3D12 made the present pipeline; the rest are for the game's image (specs 002-004)
             g_rectListGs = g_rhi->CreateShader(rhi::Stage::Geometry, RECT_LIST_GS, "rect_list_gs", rhi::Layout::Draw);
             g_hudGs = g_rhi->CreateShader(rhi::Stage::Geometry, HUD_GS, "hud_gs", rhi::Layout::Draw);
             if (!g_hudGs)
@@ -3532,6 +3538,34 @@ float4 main(float4 position : SV_Position) : SV_Target
             return g_rectListGs && g_depthAliasPs && g_fxaaPipeline && GetResolvePipeline(DXGI_FORMAT_R8G8B8A8_UNORM) &&
                    GetResolveDepthPackedPipeline() && GetPresentPipeline(g_rhi->BackBufferFormat()) && GetPresentPipeline(DXGI_FORMAT_R8G8B8A8_UNORM);
         }
+        // The API the player asked for (renderer_choice.h), with what was ignored and why in the log.
+        choice::Choice RequestedRenderer()
+        {
+            choice::Request request;
+            request.environment = getenv("CRASH_RENDERER");
+            choice::Choice chosen = choice::Resolve(request);
+            for (const std::string& line : chosen.ignored)
+                Log("%s", line.c_str());
+            Log("[gpu] renderer requested: %s (%s)", settings::RendererName(chosen.renderer), choice::SourceLabel(chosen.source));
+            return chosen;
+        }
+
+        // Direct3D 12 for the window, or null (the backend logs why) so that Init falls back to Vulkan.
+        rhi::Device* StartD3D12(const rhi::DeviceInfo& info)
+        {
+#ifdef _WIN32
+            rhi::Device* device = rhi::CreateD3D12(info);
+            if (!device)
+                return nullptr;
+            g_rhi = device;
+            g_presenterOnly = true;
+            return device;
+#else
+            Log("[gpu] Direct3D 12 is Windows only");
+            return nullptr;
+#endif
+        }
+
         // The settings screen changed the internal resolution or the upscaler (RequestReconfigure):
         // between two frames, with the GPU idle, the scales change, every render target and resolve
         // surface is recreated at its new size (keeping its descriptors; contents cleared: the game
@@ -3749,9 +3783,22 @@ float4 main(float4 position : SV_Position) : SV_Target
         info.diagnostics = diagnostics;
         info.shaderCompilation = RhiShaderCompilation(startup.shaderCompilation);
         upscaler::VulkanExtensions(info.instanceExtensions, info.deviceExtensions);
-        g_rhi = rhi::CreateVulkan(info);
+        choice::Choice chosen = RequestedRenderer();
+        g_rhi = nullptr;
+        if (chosen.renderer == settings::Renderer::D3D12)
+        {
+            uint64_t start = plat::PerfCounter();
+            g_rhi = StartD3D12(info);
+            if (!g_rhi)
+                Log("[gpu] Direct3D 12 could not start (%llu ms): falling back to Vulkan",
+                    (unsigned long long)((plat::PerfCounter() - start) * 1000 / plat::PerfFrequency()));
+        }
+        if (!g_rhi)
+            g_rhi = rhi::CreateVulkan(info);
         if (!g_rhi)
         {
+            if (chosen.renderer == settings::Renderer::D3D12)
+                Log("[gpu] neither Direct3D 12 nor Vulkan could start");
             // The log says which part failed (driver, GPU features, dxcompiler.dll).
             Log("[gpu] no Vulkan device: the game cannot be shown");
             plat::ShowMessageBox("Crash of the Titans (CrashRecomp)",
@@ -3763,9 +3810,20 @@ float4 main(float4 position : SV_Position) : SV_Target
         }
         g_rhi->BackBufferSize(g_backBufferWidth, g_backBufferHeight);
 
-        // Temporal upscaler: probed on this device; the scene scale depends on it.
-        upscaler::Init(g_rhi, settings::AtStartup().upscaler, (vfs::UserDataDir() / "ngx").wstring());
-        if (upscaler::Active() != settings::AtStartup().upscaler)
+        if (g_presenterOnly)
+        {
+            Log("[gpu] Direct3D 12: the game's own image is not drawn yet (specs 002-003); only the port's layer is shown, over black");
+            // The upscaler stays off without being initialized (it is a Vulkan path); settings.toml keeps what is configured.
+            if (settings::AtStartup().upscaler != settings::Upscaler::Off)
+                Log("[gpu] Direct3D 12: upscaler %s off (Vulkan only for now); settings.toml keeps it",
+                    settings::UpscalerName(settings::AtStartup().upscaler));
+        }
+        else
+        {
+            // Temporal upscaler: probed on this device; the scene scale depends on it.
+            upscaler::Init(g_rhi, settings::AtStartup().upscaler, (vfs::UserDataDir() / "ngx").wstring());
+        }
+        if (upscaler::Active() != settings::AtStartup().upscaler && !g_presenterOnly)
         {
             // It fell back (DLSS asked for where it can't run): the settings screen shows the one in
             // use, and settings.toml changes only if the player saves the options.
@@ -3798,10 +3856,21 @@ float4 main(float4 position : SV_Position) : SV_Target
         }
         NextTemporalFrame(0);
 
-        if (!smaa::Init(g_rhi))
-            Log("[gpu] SMAA unavailable: video.antialiasing = smaa falls back to FXAA");
-        if (!lighting::Init(g_rhi))
-            Log("[gpu] lighting remaster unavailable");
+        if (g_presenterOnly)
+        {
+            // Passes of the game's image: not started, and not rewritten in settings.toml either.
+            if (startup.antiAliasing != settings::AntiAliasing::Off)
+                Log("[gpu] Direct3D 12: anti-aliasing %s off (Vulkan only for now); settings.toml keeps it", settings::AntiAliasingName(startup.antiAliasing));
+            if (startup.ssao != settings::AoQuality::Off || startup.gi || startup.contactShadows || startup.softShadows)
+                Log("[gpu] Direct3D 12: lighting remaster off (Vulkan only for now); settings.toml keeps it");
+        }
+        else
+        {
+            if (!smaa::Init(g_rhi))
+                Log("[gpu] SMAA unavailable: video.antialiasing = smaa falls back to FXAA");
+            if (!lighting::Init(g_rhi))
+                Log("[gpu] lighting remaster unavailable");
+        }
 
         ParseScreenshotSettings();
         overlay::Init(g_rhi, g_rhi->BackBufferFormat(), g_screenshotDir);
@@ -3812,14 +3881,17 @@ float4 main(float4 position : SV_Position) : SV_Target
         if (const char* swap = getenv("CRASH_GPU_TRACE_SWAP"))
             g_traceSwap = strtoull(swap, nullptr, 10);
 
-        Log("[gpu] Vulkan renderer on %s%s; shader cache %s", g_rhi->AdapterName().c_str(), g_debugLayer ? " (validation layers)" : "",
-            g_shaderCacheDir.string().c_str());
+        Log("[gpu] %s renderer on %s%s; shader cache %s", g_presenterOnly ? "Direct3D 12" : "Vulkan", g_rhi->AdapterName().c_str(),
+            g_debugLayer && !g_presenterOnly ? " (validation layers)" : "", g_shaderCacheDir.string().c_str());
         int displayWidth, displayHeight, displayHz;
         if (plat::DesktopDisplayMode(displayWidth, displayHeight, displayHz))
             Log("[gpu] primary display: %dx%d at %d Hz", displayWidth, displayHeight, displayHz);
         // Both variants of every known game shader into the SPIR-V cache, off the critical path,
         // and the pipeline parts of the variant in use (asynchronous shader compilation).
-        warmup::StartBackground(g_shaderCacheDir, g_rhi, g_renderScaled);
+        if (g_presenterOnly)
+            Log("[gpu] Direct3D 12: shader warm-up off (it compiles SPIR-V)");
+        else
+            warmup::StartBackground(g_shaderCacheDir, g_rhi, g_renderScaled);
         g_active = true;
         settings::menu::SetAvailable(true);
         return true;
@@ -3901,7 +3973,7 @@ float4 main(float4 position : SV_Position) : SV_Target
 
     void Draw(const DrawPacket& packet)
     {
-        if (g_active)
+        if (g_active && !g_presenterOnly)
             DrawImpl(packet);
     }
 
@@ -4000,7 +4072,8 @@ float4 main(float4 position : SV_Position) : SV_Target
             imageX = std::floor((float(g_backBufferWidth) - imageWidth) * 0.5f);
             imageY = std::floor((float(g_backBufferHeight) - imageHeight) * 0.5f);
         }
-        bool bars = imageWidth < float(g_backBufferWidth) || imageHeight < float(g_backBufferHeight);
+        // Direct3D 12 (flip discard) leaves old contents in the back buffer: clear it on every frame.
+        bool bars = g_presenterOnly || imageWidth < float(g_backBufferWidth) || imageHeight < float(g_backBufferHeight);
         float constants[8] = { 1.0f, 1.0f, imageWidth, imageHeight, 0.0f, 0.0f, imageX, imageY };
         uint32_t flags = g_swapRedBlue ? 1u : 0u;
         // The front buffer is read like a texture, through the swizzle of the fetch constant

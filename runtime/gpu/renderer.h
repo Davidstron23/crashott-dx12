@@ -29,8 +29,9 @@ namespace gpu
 
     namespace renderer
     {
-        // Creates the window and the Vulkan device. Without one (no Vulkan 1.3 driver, no
-        // dxcompiler.dll with SPIR-V) it logs why, tells the player in a message box and exits.
+        // Creates the window and the device of the chosen API (renderer_choice.h); Direct3D 12 falls
+        // back to Vulkan. Without a device (no Vulkan 1.3 driver, no dxcompiler.dll with SPIR-V) it
+        // logs why, tells the player in a message box and exits.
         bool Init();
         bool IsActive();
 

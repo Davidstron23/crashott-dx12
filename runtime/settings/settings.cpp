@@ -630,6 +630,24 @@ namespace settings
         }
     }
 
+    const char* RendererName(Renderer renderer)
+    {
+        return renderer == Renderer::D3D12 ? "d3d12" : "vulkan";
+    }
+
+    bool ParseRenderer(const char* text, Renderer& renderer)
+    {
+        if (!text)
+            return false;
+        if (plat::CompareNoCase(text, "vulkan") == 0 || plat::CompareNoCase(text, "vk") == 0)
+            renderer = Renderer::Vulkan;
+        else if (plat::CompareNoCase(text, "d3d12") == 0 || plat::CompareNoCase(text, "dx12") == 0 || plat::CompareNoCase(text, "directx12") == 0)
+            renderer = Renderer::D3D12;
+        else
+            return false;
+        return true;
+    }
+
     const char* UpscalerName(Upscaler upscaler)
     {
         switch (upscaler)

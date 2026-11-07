@@ -131,7 +131,7 @@ endif()
 add_executable(CrashRecomp ${CRASH_RUNTIME_SOURCES})
 if (WIN32)
     target_link_libraries(CrashRecomp PRIVATE CrashPPC XexImage ${CRASH_XAUDIO2_LIB} winmm version ole32
-        hid setupapi windowscodecs)
+        hid setupapi windowscodecs d3d12 dxgi)
 else()
     # tools/linux_sdl3.py's build (every backend by dlopen, glibc 2.29) goes next to the exe; the
     # Steam Runtime's (setup.py's .debs) doesn't: it needs libraries a bare SteamOS may lack.
