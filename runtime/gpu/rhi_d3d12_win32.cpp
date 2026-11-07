@@ -968,7 +968,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             if (DxilSigned(m_fullscreenVs) && DxilDllFound())
                 Log("[gpu] Direct3D 12: DXIL signed by dxil.dll");
             else
-                Log("[gpu] Direct3D 12: DXIL NOT signed (no dxil.dll next to the exe): Direct3D 12 will refuse the shaders");
+                Log("[gpu] Direct3D 12: DXIL NOT signed (no dxil.dll next to the exe): some Windows versions may refuse the shaders");
 
             // Swap chain: flip model, borderless window as on Vulkan, no tearing (spec 004).
             DXGI_SWAP_CHAIN_DESC1 swapDesc{};

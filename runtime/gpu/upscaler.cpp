@@ -1,5 +1,6 @@
 #include "upscaler.h"
 #include "../diagnostics.h"
+#include "gpu_detect.h"
 #include "../settings/gpu_vendor.h"
 
 #include "../platform/text.h"
@@ -39,6 +40,9 @@ namespace gpu::upscaler
         // chosen in settings.toml is probed at startup, the other one when the settings screen first
         // asks (Available).
         bool g_dlssProbed = false, g_fsrProbed = false;
+        // The renderer's API has no upscaler path (DisableForBackend): Available answers with the
+        // launcher's rule, calculated once into g_dlssAvailable / g_fsrAvailable.
+        bool g_disabledForBackend = false;
         settings::Upscaler g_active = settings::Upscaler::Off;
         std::string g_name = "off";
 
@@ -514,9 +518,29 @@ namespace gpu::upscaler
         (void)device;
     }
 
+    void DisableForBackend()
+    {
+        // The launcher's rule (launcher.cpp, "DLSS needs an NVIDIA RTX GPU..."), without NGX's own check
+        // (--probe-dlss belongs to the launcher): the files next to the exe and the GPU.
+        gpu::GpuInfo info = gpu::DetectGpu();
+        g_dlssAvailable = info.vendor == settings::VENDOR_NVIDIA && std::filesystem::exists(ExeDirectory() / DLSS_MODULE) &&
+                          std::filesystem::exists(NgxDlssFile());
+#if CRASH_HAVE_FSR
+        g_fsrAvailable = std::filesystem::exists(ExeDirectory() / FFX_MODULE) && (!info.vulkan || info.fsrExtensions);
+#else
+        g_fsrAvailable = false;
+#endif
+        g_dlssProbed = g_fsrProbed = g_disabledForBackend = true;
+        g_active = settings::Upscaler::Off;
+        g_name = "off";
+        Log("[gpu] Direct3D 12: GPU %s (%s%s) by the launcher's rule: DLSS %s, FSR %s", info.name.empty() ? "?" : info.name.c_str(),
+            settings::GpuVendorName(info.vendor), info.forced ? ", CRASH_GPU_VENDOR" : "", g_dlssAvailable ? "yes" : "no",
+            g_fsrAvailable ? "yes" : "no");
+    }
+
     bool Available(settings::Upscaler upscaler)
     {
-        if (!g_device)
+        if (!g_device && !g_disabledForBackend)
             return false;
         int64_t start, end, frequency;
         start = int64_t(plat::PerfCounter());
@@ -573,6 +597,12 @@ namespace gpu::upscaler
 
     void Select(settings::Upscaler wanted)
     {
+        if (g_disabledForBackend)
+        {
+            g_active = settings::Upscaler::Off;
+            g_name = "off";
+            return;
+        }
         g_active = Available(wanted) ? wanted : settings::Upscaler::Off;
         if (wanted != settings::Upscaler::Off && g_active == settings::Upscaler::Off)
             Log("[gpu] upscaler %s is not available here: the scene is drawn without temporal upscaling", settings::UpscalerName(wanted));

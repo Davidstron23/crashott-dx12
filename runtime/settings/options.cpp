@@ -62,7 +62,7 @@ namespace settings::options
               { Item::Master, Item::Music, Item::Effects, Item::Voice, Item::HeaderSubtitles, Item::Subtitles, Item::SubtitleSize,
                 Item::SubtitleBackground } },
             { "video", { "VIDEO", "VÍDEO" }, { Item::Window, Item::Resolution, Item::FpsLimit, Item::VSync, Item::AntiAliasing, Item::Overlay, Item::Aspect,
-                Item::Hud16x9 } },
+                Item::Hud16x9, Item::Renderer } },
             { "graphics", { "GRAPHICS", "GRÁFICOS" },
               { Item::Upscaler, Item::UpscalerQuality, Item::Sharpness, Item::MotionBlur, Item::DepthOfField, Item::Anisotropy,
                 Item::ShadowSoftness, Item::ShaderCompilation } },
@@ -103,6 +103,7 @@ namespace settings::options
         case Item::Overlay: return "video.overlay";
         case Item::Aspect: return "video.aspect";
         case Item::Hud16x9: return "video.hud_16_9";
+        case Item::Renderer: return "video.renderer";
         case Item::Upscaler: return "graphics.upscaler";
         case Item::UpscalerQuality: return "graphics.upscaler_quality";
         case Item::Sharpness: return "graphics.sharpness";
@@ -165,6 +166,7 @@ namespace settings::options
         case Item::Overlay: return "OVERLAY (F1)";
         case Item::Aspect: return t({ "ASPECT RATIO", "PROPORÇÃO" });
         case Item::Hud16x9: return t({ "HUD AT 16:9", "HUD EM 16:9" });
+        case Item::Renderer: return t({ "RENDERER", "RENDERIZADOR" });
         case Item::Upscaler: return "DLSS / FSR";
         case Item::UpscalerQuality: return t({ "UPSCALER MODE", "MODO DO UPSCALER" });
         case Item::Sharpness: return t({ "SHARPNESS (FSR)", "NITIDEZ (FSR)" });
@@ -264,6 +266,7 @@ namespace settings::options
                 return std::string("AUTO (") + AspectName(EffectiveAspect(Aspect::Auto)) + ")";
             return std::string(AspectName(values.aspect)) + (values.aspect == Aspect::R16_9 ? " (ORIGINAL)" : "");
         case Item::Hud16x9: return OnOff(pt, values.hud16x9);
+        case Item::Renderer: return values.renderer == Renderer::D3D12 ? "DIRECT3D 12" : "VULKAN";
         case Item::FpsLimit:
             return values.fpsLimit ? std::to_string(values.fpsLimit) + (values.fpsLimit == 30 ? " (ORIGINAL)" : "") : t({ "UNLIMITED", "SEM LIMITE" });
         case Item::Upscaler:
@@ -380,6 +383,8 @@ namespace settings::options
         case Item::Hud16x9:
             return { t({ "On: HUD and menus in the middle 16:9 area.", "Ligado: HUD e menus na área 16:9 do meio." }),
                      t({ "Off: the HUD corners go to the screen's edges.", "Desligado: os cantos do HUD vão às bordas da tela." }) };
+        case Item::Renderer:
+            return { t({ "Graphics API. Direct3D 12: for mods that hook Direct3D.", "API gráfica. Direct3D 12: para mods que usam Direct3D." }), restart };
         case Item::Overlay:
             return { t({ "Performance overlay: FPS, frame time and graph.", "Overlay de desempenho: FPS, frame time e gráfico." }),
                      t({ "F1 switches it at any time.", "O F1 alterna a qualquer momento." }) };
@@ -600,6 +605,7 @@ namespace settings::options
             values.renderHeight = ResolutionOf(values.aspect, values.renderHeight).height;
             break;
         case Item::Hud16x9: values.hud16x9 = !values.hud16x9; break;
+        case Item::Renderer: values.renderer = Cycle(values.renderer, 2, direction); break;
         case Item::AntiAliasing: values.antiAliasing = Cycle(values.antiAliasing, 3, direction); break;
         case Item::Overlay: values.overlay = Cycle(values.overlay, 4, direction); break;
         case Item::Upscaler:
@@ -682,7 +688,7 @@ namespace settings::options
 
     bool RestartOnly(Item item)
     {
-        return item == Item::Language || item == Item::MojoColors || item == Item::HdRemaster;
+        return item == Item::Language || item == Item::MojoColors || item == Item::HdRemaster || item == Item::Renderer;
     }
 
     LightingPreset LightingPresetOf(const Values& values)

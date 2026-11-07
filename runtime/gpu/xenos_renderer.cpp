@@ -3842,6 +3842,7 @@ float4 main(float4 position : SV_Position) : SV_Target
             if (settings::AtStartup().upscaler != settings::Upscaler::Off)
                 Log("[gpu] Direct3D 12: upscaler %s off (Vulkan only for now); settings.toml keeps it",
                     settings::UpscalerName(settings::AtStartup().upscaler));
+            upscaler::DisableForBackend();  // Available() for SETTINGS, by the launcher's rule (L14)
         }
         else
         {

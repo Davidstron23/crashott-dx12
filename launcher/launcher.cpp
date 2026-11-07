@@ -29,6 +29,7 @@
 #endif
 
 #include "../runtime/fs/vfs.h"
+#include "../runtime/gpu/gpu_detect.h"
 #include "../runtime/gpu/png_writer.h"
 #include "../runtime/paths.h"
 #include "../runtime/gpu/dlss_module/crash_dlss.h"

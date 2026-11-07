@@ -111,7 +111,7 @@ namespace settings::menu
         constexpr size_t MAX_ROWS = 9;
 
         const Tab* const TABS = options::Tabs();
-        constexpr int GAME_TAB = 0, DEFINITIVE_TAB = 5;
+        constexpr int GAME_TAB = 0, VIDEO_TAB = 2, DEFINITIVE_TAB = 5;
 
         bool Selectable(Item item)
         {
@@ -291,9 +291,13 @@ namespace settings::menu
             return options::Value(item, g_values, OptionContext());
         }
 
+        // The renderer the settings screen opened with (RENDERER applies at the next launch, so it is
+        // compared with what the file said when the screen opened, not with AtStartup).
+        Renderer g_rendererAtOpen = Renderer::Vulkan;
+
         bool NeedsRestart()
         {
-            return settings::NeedsRestart(g_values);
+            return settings::NeedsRestart(g_values) || g_values.renderer != g_rendererAtOpen;
         }
 
         // The changed options that need a restart, by name ("LANGUAGE, MUSIC").
@@ -308,6 +312,7 @@ namespace settings::menu
             add(g_values.language != boot.language, Item::Language);
             add(g_values.ps2MojoColors != boot.ps2MojoColors, Item::MojoColors);
             add(g_values.hdRemaster != boot.hdRemaster, Item::HdRemaster);
+            add(g_values.renderer != g_rendererAtOpen, Item::Renderer);
             return list;
         }
 
@@ -955,6 +960,7 @@ namespace settings::menu
             if (g_requested.exchange(false) && !g_open)
             {
                 g_values = Get();
+                g_rendererAtOpen = g_values.renderer;
                 g_values.overlay = gpu::overlay::Mode();  // F1 and Alt+Enter may have changed these
                 g_values.window = gpu::window::Mode();
                 Reset();
@@ -1200,6 +1206,7 @@ namespace settings::menu
         std::error_code error;
         std::filesystem::create_directories(directory, error);
         const Values saved = Get();
+        g_rendererAtOpen = saved.renderer;  // else a settings.toml with d3d12 would look like a pending change in every image
         g_previewPalette = &CLOTH;
         struct Size
         {
@@ -1218,14 +1225,14 @@ namespace settings::menu
                 // EDITION with the FREE CAMERA row and with the lighting rows (all on), the restart
                 // dialog (mojo colours changed) and,
                 // as opened from the pause menu, GAME with the game's own options (CO-OP selected).
-                enum { LEGENDAS = TAB_COUNT, CAMERA, ILUMINACAO, REINICIAR, PAUSA };
+                enum { LEGENDAS = TAB_COUNT, CAMERA, ILUMINACAO, REINICIAR, PAUSA, RENDERIZADOR };
                 auto rowOf = [](int tab, Item item) {
                     const std::vector<Item>& items = TABS[tab].items;
                     return int(std::find(items.begin(), items.end(), item) - items.begin());
                 };
-                for (int shot = 0; shot <= PAUSA; shot++)
+                for (int shot = 0; shot <= RENDERIZADOR; shot++)
                 {
-                    int tab = shot < TAB_COUNT ? shot : shot == LEGENDAS ? 1 : shot == PAUSA ? GAME_TAB : DEFINITIVE_TAB;
+                    int tab = shot < TAB_COUNT ? shot : shot == LEGENDAS ? 1 : shot == PAUSA ? GAME_TAB : shot == RENDERIZADOR ? VIDEO_TAB : DEFINITIVE_TAB;
                     bool inGame = shot == PAUSA;
                     g_fromMainMenu = !inGame;
                     g_previewPalette = inGame ? &DIMMED : &CLOTH;
@@ -1241,6 +1248,8 @@ namespace settings::menu
                         g_row[tab] = rowOf(tab, Item::LightSsao);
                     else if (shot == PAUSA)
                         g_row[tab] = rowOf(tab, Item::CoopMode);
+                    else if (shot == RENDERIZADOR)
+                        g_row[tab] = rowOf(tab, Item::Renderer);
                     Values kept = g_values;
                     if (shot == ILUMINACAO)
                     {
@@ -1273,7 +1282,8 @@ namespace settings::menu
                              : shot == CAMERA     ? "_camera"
                              : shot == ILUMINACAO ? "_iluminacao"
                              : shot == REINICIAR  ? "_reiniciar"
-                                                  : "_pausa");
+                             : shot == PAUSA      ? "_pausa"
+                                                  : "_renderizador");
                     if (gpu::WritePng(directory / name, reinterpret_cast<const uint8_t*>(image.data()), uint32_t(size.w), uint32_t(size.h),
                                       uint32_t(size.w) * 4))
                         written++;

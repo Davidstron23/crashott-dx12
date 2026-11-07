@@ -93,12 +93,12 @@ def copy_third_party(project):
 
 def fetch_dxil():
     """dxil.dll, from the official DXC release (SHA-256 checked by setup.py), if the copied DXC lacks it."""
-    if (ROOT / "thirdparty" / "dxc" / "bin" / "dxil.dll").is_file():
-        print("  thirdparty/dxc/bin/dxil.dll: already there, kept")
-        return
     import setup as crash_setup  # tools/setup.py, the same folder
-    crash_setup.fetch_dxc()
-    print("  thirdparty/dxc/bin/dxil.dll: downloaded")
+    dxil = ROOT / "thirdparty" / "dxc" / "bin" / "dxil.dll"
+    before = dxil.stat().st_mtime_ns if dxil.is_file() else None
+    crash_setup.fetch_dxc()  # checks the SHA-256 of a file already there; replaces it if it differs
+    kept = before is not None and dxil.stat().st_mtime_ns == before
+    print("  thirdparty/dxc/bin/dxil.dll: already there, SHA-256 checked" if kept else "  thirdparty/dxc/bin/dxil.dll: downloaded")
 
 
 def set_game_folder(install):
