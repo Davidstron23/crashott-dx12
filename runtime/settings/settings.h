@@ -11,7 +11,8 @@
 //             aspect = "auto" | "16:9" | "16:10" | "21:9" | "32:9", hud_16_9 = true|false
 //             (gpu/widescreen.h),
 //             overlay = "off" | "fps" | "frametime" | "full" (show_fps = true|false still read),
-//             antialiasing = "off" | "fxaa" | "smaa", gpu_safe_mode = "off" | "on" | a list (gpu/rhi.h
+//             antialiasing = "off" | "fxaa" | "smaa", renderer = "vulkan" | "d3d12"
+//             (gpu/renderer.h; on the next launch), gpu_safe_mode = "off" | "on" | a list (gpu/rhi.h
 //             SafeMode), gpu_diagnostics = true|false (on the next launch)
 //   [graphics] upscaler = "off" | "dlss" | "fsr", upscaler_quality = "native" | "quality" |
 //             "balanced" | "performance" | "ultra_performance", sharpness = 0..100 (%),
@@ -136,6 +137,7 @@ namespace settings
         bool hud16x9 = true;      // video.hud_16_9: the HUD and menus in the middle 16:9 area (else the HUD corners at the screen's edges)
         OverlayMode overlay = OverlayMode::Off;
         AntiAliasing antiAliasing = AntiAliasing::Off;
+        Renderer renderer = Renderer::Vulkan;  // video.renderer of settings.toml (never CRASH_SETTINGS'), shown and saved by the launcher and SETTINGS
         // gpu_safe_mode: "off", "on" or a list of the renderer's conservative paths (gpu/rhi.h
         // SafeMode); gpu_diagnostics: the GPU's details in the log. Both on the next launch.
         std::string gpuSafeMode = "off";
@@ -258,6 +260,9 @@ namespace settings
     const char* WindowModeName(WindowMode mode);
     const char* AspectName(Aspect aspect);                        // "auto", "16:9", "16:10", "21:9", "32:9"
     const char* AntiAliasingName(AntiAliasing mode);
+    // The renderer asked for in the settings: Override with CRASH_SETTINGS' video.renderer if valid,
+    // else File with settings.toml's if that line was valid, else None (renderer untouched).
+    RendererOrigin RendererRequested(Renderer& renderer);
     const char* RendererName(Renderer renderer);                  // "vulkan", "d3d12"
     // vulkan | vk, d3d12 | dx12 | directx12 (any case); false (renderer untouched) for null or any other text.
     bool ParseRenderer(const char* text, Renderer& renderer);

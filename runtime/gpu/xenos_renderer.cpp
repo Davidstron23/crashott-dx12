@@ -389,6 +389,8 @@ namespace gpu::renderer
         // Direct3D 12 (spec 001): only the port's layer (the present pass, the overlay, SETTINGS) is
         // drawn; the game's draws are not sent to the backend (that is specs 002-003).
         bool g_presenterOnly = false;
+        bool g_rendererArgumentGiven = false;      // --renderer on the command line (SetRendererArgument)
+        const char* g_rendererArgument = nullptr;  // its value (from argv, which outlives Init); null: none
 
         // CRASH_GPU_PROFILE: what the GPU work recorded from here on is for (the label of its rows).
         __attribute__((format(printf, 1, 2))) void ProfileLabel(const char* format, ...)
@@ -3542,7 +3544,10 @@ float4 main(float4 position : SV_Position) : SV_Target
         choice::Choice RequestedRenderer()
         {
             choice::Request request;
+            request.argumentGiven = g_rendererArgumentGiven;
+            request.argument = g_rendererArgument;
             request.environment = getenv("CRASH_RENDERER");
+            request.settings = settings::RendererRequested(request.settingsRenderer);
             choice::Choice chosen = choice::Resolve(request);
             for (const std::string& line : chosen.ignored)
                 Log("%s", line.c_str());
@@ -3733,6 +3738,12 @@ float4 main(float4 position : SV_Position) : SV_Target
                 g_screenshotDir = std::filesystem::current_path();
             g_swapRedBlue = getenv("CRASH_PRESENT_SWAP_RB") != nullptr;
         }
+    }
+
+    void SetRendererArgument(const char* value)
+    {
+        g_rendererArgumentGiven = true;
+        g_rendererArgument = value;
     }
 
     bool Init()

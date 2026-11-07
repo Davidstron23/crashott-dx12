@@ -33,6 +33,8 @@ namespace gpu
         // back to Vulkan. Without a device (no Vulkan 1.3 driver, no dxcompiler.dll with SPIR-V) it
         // logs why, tells the player in a message box and exits.
         bool Init();
+        // --renderer (main.cpp), before Init; value null = given without a value.
+        void SetRendererArgument(const char* value);
         bool IsActive();
 
         // Translates and compiles every shader container (*.out) in `folder` (the game's shaders\

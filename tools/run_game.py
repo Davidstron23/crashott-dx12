@@ -473,11 +473,13 @@ def environment(settings, run_dir, profile=None):
 
 def restart_environment(env, settings, run_dir, launch):
     """The environment of launch number `launch` (1 = the first restart): the per-run overrides of
-    the first launch (CRASH_SETTINGS is already in its settings.toml; input, replay and recording
-    would start over) are dropped, and screenshots / frame times go to reinicio_<launch>/."""
+    the first launch (CRASH_SETTINGS is already in its settings.toml, and CRASH_RENDERER would
+    override the renderer the player just chose; input, replay and recording would start over) are dropped,
+    and screenshots / frame times go to reinicio_<launch>/."""
     env = {k: v for k, v in env.items()
            if k not in ("CRASH_SETTINGS", "CRASH_INPUT_SCRIPT", "CRASH_REPLAY", "CRASH_RECORD_INPUT",
-                        "CRASH_SCREENSHOTS", "CRASH_SCREENSHOT_TIMES", "CRASH_AUDIO_DUMP", "CRASH_BOOT")}
+                        "CRASH_SCREENSHOTS", "CRASH_SCREENSHOT_TIMES", "CRASH_AUDIO_DUMP", "CRASH_BOOT",
+                        "CRASH_RENDERER")}
     folder = run_dir / f"reinicio_{launch}"
     folder.mkdir(exist_ok=True)
     env["CRASH_SCREENSHOT_DIR"] = str(folder)

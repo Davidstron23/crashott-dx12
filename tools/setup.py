@@ -564,6 +564,9 @@ def fetch_thirdparty(dlss=True):
 def fetch_dxc():
     """dxcompiler.dll and dxil.dll (+ licenses) from the official DXC release, into thirdparty/dxc/bin."""
     dxc = ROOT / "thirdparty" / "dxc" / "bin"
+    # A dxil.dll that is not the pinned one is never kept: CMake would copy it next to the exe.
+    if (dxc / "dxil.dll").is_file() and sha256(dxc / "dxil.dll") != DXIL_SHA256:
+        (dxc / "dxil.dll").unlink()
     if all((dxc / name).is_file() for name in DXC_FILES.values()):
         return
     url, digest = DXC_ZIP
@@ -574,6 +577,7 @@ def fetch_dxc():
             with z.open(source) as src, open(dxc / name, "wb") as out:
                 shutil.copyfileobj(src, out)
     if sha256(dxc / "dxil.dll") != DXIL_SHA256:
+        (dxc / "dxil.dll").unlink()
         fail("dxil.dll: o arquivo não confere (SHA-256)")
 
 

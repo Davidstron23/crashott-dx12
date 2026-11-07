@@ -94,6 +94,9 @@ namespace settings
         std::mutex g_mutex;
         Values g_values;
         Values g_startup;
+        bool g_rendererInFile = false;       // settings.toml has a valid video.renderer line
+        Renderer g_rendererOverride;         // video.renderer of CRASH_SETTINGS: a source of the choice, never in Values (RF-16)
+        bool g_haveRendererOverride = false;
         std::filesystem::path g_path;
 
         std::string Trim(std::string text)
@@ -231,7 +234,18 @@ namespace settings
                 ok = ParseBool(lower, values.gpuDiagnostics);
             else if (name == "video.renderer")
             {
-                // The Direct3D 12 / Vulkan choice of the 2026-10-23 builds: Vulkan is the only renderer now.
+                Renderer parsed;
+                ok = ParseRenderer(lower.c_str(), parsed);
+                if (ok && line > 0)  // settings.toml
+                {
+                    values.renderer = parsed;
+                    g_rendererInFile = true;
+                }
+                else if (ok)  // CRASH_SETTINGS (line 0): never shown or saved, so the file keeps what the player chose
+                {
+                    g_rendererOverride = parsed;
+                    g_haveRendererOverride = true;
+                }
             }
             else if (name == "graphics.upscaler")
             {
@@ -419,6 +433,7 @@ namespace settings
                    "hud_16_9 = " << (v.hud16x9 ? "true" : "false") << "   # HUD e menus na area 16:9 do meio; false = cantos do HUD nas bordas da tela (vale na hora)\n"
                    "overlay = \"" << OverlayModeName(v.overlay) << "\"   # off | fps | frametime | full (F1 alterna)\n"
                    "antialiasing = \"" << AntiAliasingName(v.antiAliasing) << "\"   # off | fxaa | smaa (pos-processamento da imagem final)\n"
+                   "renderer = \"" << RendererName(v.renderer) << "\"   # vulkan (padrao) | d3d12: API grafica (vale ao reiniciar o jogo)\n"
                    "gpu_safe_mode = \"" << v.gpuSafeMode << "\"   # off | on | lista: barriers, instances, serial, memory, depth, present, cache (telas pretas em alguns drivers; ao reiniciar)\n"
                    "gpu_diagnostics = " << (v.gpuDiagnostics ? "true" : "false") << "   # detalhes da GPU e do driver no log (ao reiniciar)\n\n"
                    "[graphics]\n"
@@ -628,6 +643,21 @@ namespace settings
         case AntiAliasing::Smaa: return "smaa";
         default: return "off";
         }
+    }
+
+    RendererOrigin RendererRequested(Renderer& renderer)
+    {
+        if (g_haveRendererOverride)
+        {
+            renderer = g_rendererOverride;
+            return RendererOrigin::Override;
+        }
+        if (g_rendererInFile)
+        {
+            renderer = g_startup.renderer;
+            return RendererOrigin::File;
+        }
+        return RendererOrigin::None;
     }
 
     const char* RendererName(Renderer renderer)
