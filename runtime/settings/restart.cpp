@@ -7,8 +7,9 @@
 // to exit before starting (window, audio device, saves) and skips the intros (direct_boot.h: the
 // logo videos and the title screen, straight to the main menu).
 // Per-run overrides that would undo the new choices or replay a test script from the start are
-// dropped: CRASH_SETTINGS (its values are already in settings.toml), CRASH_INPUT_SCRIPT,
-// CRASH_REPLAY, CRASH_RECORD_INPUT and CRASH_BOOT (the new process stops at the main menu).
+// dropped: CRASH_SETTINGS (its values are already in settings.toml), --renderer and CRASH_RENDERER
+// (they would override the renderer just chosen), CRASH_INPUT_SCRIPT, CRASH_REPLAY,
+// CRASH_RECORD_INPUT and CRASH_BOOT (the new process stops at the main menu).
 //
 // CRASH_RESTART: "relaunch" (default), "exit" = exit with code 4 and let the caller start the
 // game again (tools/run_game.py, which tracks the process), "off" = no restart (the options
@@ -90,13 +91,20 @@ namespace settings
                 i++;
                 continue;
             }
+            if (current[i] == "--renderer")
+            {
+                // Its value goes too, unless it is missing and the next word is another option.
+                if (i + 1 < current.size() && current[i + 1].compare(0, 2, "--") != 0)
+                    i++;
+                continue;
+            }
             arguments.push_back(current[i]);
         }
         arguments.push_back("--restarted");
         arguments.push_back(std::to_string(plat::CurrentProcessId()));
 
         // The environment is inherited, minus the per-run overrides (see the top of the file).
-        for (const char* name : { "CRASH_SETTINGS", "CRASH_INPUT_SCRIPT", "CRASH_REPLAY", "CRASH_RECORD_INPUT", "CRASH_BOOT" })
+        for (const char* name : { "CRASH_SETTINGS", "CRASH_INPUT_SCRIPT", "CRASH_REPLAY", "CRASH_RECORD_INPUT", "CRASH_BOOT", "CRASH_RENDERER" })
             plat::SetEnvironment(name, nullptr);
         // The window comes back where it was.
         int x, y, width, height;

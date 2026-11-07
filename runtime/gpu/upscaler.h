@@ -30,6 +30,11 @@ namespace gpu::upscaler
     // support it). Known once the renderer has started; false before.
     bool Available(settings::Upscaler upscaler);
 
+    // The renderer's API has no upscaler path yet (Direct3D 12, issues #6/#7): Active() stays Off and Init
+    // is not called; Available() answers with the launcher's rule (gpu_detect.h), so the settings screen
+    // greys out only what this PC can't run and shows the configured upscaler as it is.
+    void DisableForBackend();
+
     // Renderer startup: probes DLSS and FSR on `device` (for Available) and chooses `wanted` if
     // it is available. `dataDir`: where NGX may write its logs.
     void Init(rhi::Device* device, settings::Upscaler wanted, const std::wstring& dataDir);

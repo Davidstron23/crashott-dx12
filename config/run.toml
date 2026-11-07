@@ -54,6 +54,7 @@ audio_dump_seconds = 60
 log_imports = []       # imports a logar em toda chamada (CRASH_LOG_IMPORTS)
 log_all_io = false
 gpu_debug = false      # validation layers do Vulkan + validação de sincronização (CRASH_GPU_DEBUG; precisa do Vulkan SDK)
+renderer = ""          # "" = o do settings.toml | "vulkan" | "d3d12" (CRASH_RENDERER); ex.: --set renderer=d3d12
 # Botões do controle 0: [segundos desde a primeira leitura do controle, "BOTÃO"] (relógio de parede).
 # Botões: A B X Y START BACK UP DOWN LEFT RIGHT LB RB L3 R3 (cada um fica apertado por 200 ms;
 # [segundos, "BOTÃO", segundos_apertado] segura por mais tempo, ex.: [80, "RIGHT", 1.5]).
@@ -104,6 +105,284 @@ audio = false
 userdata_mode = "copy"
 screenshots = [300, 540]
 expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]'] }
+
+# Spec 001, T1 (renderer D3D12): o mesmo boot, com o renderizador escolhido e as linhas de log (renderer_choice.h,
+# rhi_d3d12_win32.cpp) que distinguem cada caso. As capturas pretas de D3D12 se conferem fora (comparar com a base).
+[profiles.renderizador_vulkan_boot]
+description = "Vulkan por padrão (ou forçado com --set renderer=vulkan): sem nada de Direct3D 12 no log"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+screenshots = [300, 540]
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'Direct3D 12', 'falling back'], log_contains = ['\[gpu\] renderer requested: vulkan \((default|CRASH_RENDERER)\)', '\[gpu\] Vulkan renderer on .+; shader cache .+'] }
+
+[profiles.renderizador_d3d12_boot]
+description = "renderer=d3d12 liga o Direct3D 12 (só a camada do port, sobre preto), sem voltar ao Vulkan"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+screenshots = [300, 540]
+renderer = "d3d12"
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] Direct3D 12: the game.s own image is not drawn yet', '\[gpu\] Direct3D 12: shader warm-up off'] }
+
+[profiles.renderizador_d3d12_falha_dispositivo]
+description = "CRASH_D3D12_FAIL=device: o Direct3D 12 falha de propósito e o jogo volta ao Vulkan na mesma janela"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+screenshots = [300, 540]
+renderer = "d3d12"
+env = { CRASH_D3D12_FAIL = "device" }
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'Direct3D 12 renderer on', 'neither Direct3D 12 nor Vulkan', 'shader warm-up off'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] CRASH_D3D12_FAIL=device: Direct3D 12 fails on purpose', '\[gpu\] Direct3D 12 could not start \((\d{1,3}|[12]\d{3}|3000) ms\): falling back to Vulkan', '\[gpu\] Vulkan renderer on .+; shader cache .+'] }
+
+# Spec 001, T3 (RF-28, RF-30 `shaders`): o dispositivo Direct3D 12 nasce, mas os shaders do presentador falham; o jogo solta a swap chain e volta ao
+# Vulkan na mesma janela. Sem o gancho (exe de T2, onde `shaders` era "ignored") o Direct3D 12 ligaria e este perfil falharia. As capturas se comparam
+# fora (boot: iguais, byte a byte, às do Vulkan da base).
+[profiles.renderizador_d3d12_falha_shaders]
+description = "CRASH_D3D12_FAIL=shaders: os shaders do presentador falham de propósito e o jogo volta ao Vulkan na mesma janela, sem cair"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+screenshots = [300, 540]
+renderer = "d3d12"
+env = { CRASH_D3D12_FAIL = "shaders" }
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'Direct3D 12 renderer on', 'neither Direct3D 12 nor Vulkan', 'shader warm-up off', 'own image is not drawn yet', 'ignored \(device'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] CRASH_D3D12_FAIL=shaders: the Direct3D 12 shaders fail on purpose', '\[gpu\] Direct3D 12: present: shader compilation failed on purpose', '\[gpu\] Direct3D 12: the presenter.s shaders did not compile or link', '\[gpu\] Direct3D 12 could not start \((\d{1,3}|[12]\d{3}|3000) ms\): falling back to Vulkan', '\[gpu\] Vulkan renderer on .+; shader cache .+'] }
+
+[profiles.renderizador_d3d12_falha_desconhecida]
+description = "CRASH_D3D12_FAIL com um valor desconhecido só avisa no log: o Direct3D 12 liga igual"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+screenshots = [300, 540]
+renderer = "d3d12"
+env = { CRASH_D3D12_FAIL = "foo" }
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'fails on purpose'], log_contains = ['\[gpu\] CRASH_D3D12_FAIL=foo ignored \(device \| shaders\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+'] }
+
+# Spec 001, T2 (DXIL): com o Direct3D 12, a camada do port (overlay, avisos) sai sobre preto. O que o log diz (DXIL assinado pelo dxil.dll, os
+# 2 pipelines e os 4 compiles DXIL sem falha, nenhum erro de pipeline) se confere aqui; as capturas se comparam fora (overlay no mesmo lugar
+# e com o mesmo texto que com --set renderer=vulkan, preto fora do painel). Sem dxil.dll ao lado do exe o perfil falha de propósito.
+[profiles.renderizador_d3d12_overlay]
+description = "renderer=d3d12 com overlay nas capturas: shaders DXIL assinados, present e overlay criados, sem voltar ao Vulkan"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+screenshots = [300, 540]
+renderer = "d3d12"
+overlay = true
+screenshot_overlay = true
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'could not create', 'failed to compile', 'DXIL NOT signed', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12: DXIL signed by dxil\.dll', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[overlay\] mode full .*included in screenshots', '\[gpu\] d3d12: \d+ submits, 3 pass pipelines, 6 DXIL compiles \(0 failed\)'] }
+
+[profiles.renderizador_d3d12_aviso]
+description = "renderer=d3d12: o aviso SKIP VIDEO (camada do port, sem o overlay) aparece sobre preto na primeira abertura em vídeo; a captura sai 1 s depois do aviso"
+test = true
+timeout = 25
+audio = false
+userdata_mode = "copy"
+renderer = "d3d12"
+overlay = false
+env = { CRASH_SETTINGS = "controls.prompts=xbox" }
+input = [["@skip_prompt#1"], [1, "SHOT"]]
+expect = { exit = ["timeout"], events = ["skip_prompt"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'could not create', 'failed to compile', 'DXIL NOT signed'], log_contains = ['\[gpu\] Direct3D 12: DXIL signed by dxil\.dll', '\[gpu\] d3d12: \d+ submits, 3 pass pipelines, 6 DXIL compiles \(0 failed\)'] }
+
+# Spec 001, T4 (todas as fontes da escolha: settings.toml, CRASH_SETTINGS, CRASH_RENDERER e --renderer). Os casos com --renderer e a ordem completa
+# de prioridade rodam o exe direto (build/t4_matrix.py); aqui ficam os que o run_game consegue provar. Cada um falha com o exe de T3, que ignora o arquivo e o
+# CRASH_SETTINGS. Os arquivos de tests/userdata_renderer/ só diferem da base na linha renderer.
+[profiles.renderizador_fonte_arquivo]
+description = "settings.toml com renderer = \"DX12\" (alias em maiúsculas) liga o Direct3D 12 sem nenhuma variável: fonte settings.toml"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+userdata_from = "tests/userdata_renderer/dx12"
+expect = { exit = ["timeout"], min_frames = 300, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'is not a renderer', 'invalid value'], log_contains = ['\[gpu\] renderer requested: d3d12 \(settings\.toml\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+'] }
+
+[profiles.renderizador_fonte_ajustes]
+description = "CRASH_SETTINGS com video.renderer=d3d12 vence o settings.toml (que diz vulkan): fonte CRASH_SETTINGS"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+userdata_from = "tests/userdata_renderer/vulkan"
+env = { CRASH_SETTINGS = "video.renderer=d3d12" }
+expect = { exit = ["timeout"], min_frames = 300, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'invalid value'], log_contains = ['\[settings\] CRASH_SETTINGS overrides: video\.renderer=d3d12', '\[gpu\] renderer requested: d3d12 \(CRASH_SETTINGS\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+'] }
+
+[profiles.renderizador_fonte_invalida]
+description = "Valor que não é renderizador no settings.toml e no CRASH_SETTINGS: os dois avisam, são ignorados e o jogo arranca com Vulkan (padrão)"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+userdata_from = "tests/userdata_renderer/foo"
+env = { CRASH_SETTINGS = "video.renderer=bar" }
+expect = { exit = ["timeout"], min_frames = 300, log_absent = ['\[fatal\]', '\[crash\]', 'Direct3D 12', 'falling back'], log_contains = ['invalid value "foo" for video\.renderer \(default kept\)', 'invalid value "bar" for video\.renderer \(default kept\)', '\[gpu\] renderer requested: vulkan \(default\)', '\[gpu\] Vulkan renderer on .+; shader cache .+'] }
+
+[profiles.renderizador_prioridade]
+description = "CRASH_RENDERER inválido é ignorado com aviso e cai no CRASH_SETTINGS (vulkan), que vence o settings.toml (DX12): vulkan (CRASH_SETTINGS)"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+userdata_from = "tests/userdata_renderer/dx12"
+env = { CRASH_RENDERER = "foo", CRASH_SETTINGS = "video.renderer=vulkan" }
+expect = { exit = ["timeout"], min_frames = 300, log_absent = ['\[fatal\]', '\[crash\]', 'Direct3D 12', 'falling back'], log_contains = ['\[gpu\] CRASH_RENDERER "foo" is not a renderer \(vulkan \| d3d12\): ignored', '\[gpu\] renderer requested: vulkan \(CRASH_SETTINGS\)', '\[gpu\] Vulkan renderer on .+; shader cache .+'] }
+
+# RF-11 de ponta a ponta com o run_game (saída 4 e o runner reabre). Chega a SETTINGS sem o guião de horas de configuracoes_reinicio, que em v1.07 não
+# chega lá: CRASH_MENU_AUTOPILOT aperta por nó do frontend (70 = menu principal: DOWN x3, A = SETTINGS) e o resto é do input (LEFT = idioma, B = pergunta,
+# A = reinicia). O fps_limit = 30 importa: tests/userdata_base tem fps_limit = 0 e, sem limite (~900 fps), os apertos de 200 ms do menu principal se perdem (é também por
+# isso que configuracoes_reinicio "não chega" a SETTINGS; com video.fps_limit=30 ele passa). O jogo reaberto herda o env menos CRASH_RENDERER (e CRASH_MENU_AUTOPILOT, zerado em restart_env) e usa o do settings.toml (vulkan).
+[profiles.renderizador_reinicio_limpa]
+description = "Reinício a partir de SETTINGS com renderer=d3d12 (CRASH_RENDERER): o jogo reaberto já não leva a variável e arranca com o renderizador do settings.toml"
+test = true
+timeout = 45
+audio = false
+userdata_mode = "copy"
+skip_intros = true
+renderer = "d3d12"
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_SETTINGS = "video.fps_limit=30" }
+input = [["@main_menu"], [10, "LEFT"], [11.5, "SHOT"], [12, "B"], [14, "SHOT"], [15, "A"]]
+restart_env = { CRASH_MENU_AUTOPILOT = "" }
+restart_input = [["@main_menu"], [2, "SHOT"]]
+restart_timeout = 12
+expect = { exit = ["timeout"], restarts = 1, events = ["main_menu#2"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on', 'restart needed for IDIOMA', 'restart accepted', 'exiting with code 4', 'restarted from the settings screen', '\[gpu\] renderer requested: vulkan \(settings\.toml\)', '\[gpu\] Vulkan renderer on'] }
+
+# Spec 001, T5 (a fila RENDERIZADOR de SETTINGS). Chegam a SETTINGS como renderizador_reinicio_limpa (CRASH_MENU_AUTOPILOT, e fps_limit = 30 para os apertos
+# nao se perderem). Dentro de SETTINGS (abre na aba JOGO): RB x2 = VÍDEO; DOWN x8 = RENDERIZADOR (9ª e última linha); as teclas do input chegam como mensagens de janela.
+# O input é relativo a @main_menu: o autopilot leva ~6,4 s depois dele para abrir SETTINGS, por isso o primeiro toque só aos 9 s.
+[profiles.renderizador_reinicio]
+description = "SETTINGS > VÍDEO > RENDERIZADOR: RIGHT, LEFT, RIGHT, sai e aceita o reinício; o jogo reaberto usa o renderizador salvo no settings.toml"
+test = true
+timeout = 45
+audio = false
+userdata_mode = "copy"
+skip_intros = true
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_SETTINGS = "video.fps_limit=30" }
+input = [
+    ["@main_menu"], [9, "RB"], [9.6, "RB"],
+    [10.2, "DOWN"], [10.6, "DOWN"], [11, "DOWN"], [11.4, "DOWN"], [11.8, "DOWN"], [12.2, "DOWN"], [12.6, "DOWN"], [13, "DOWN"],
+    [13.6, "RIGHT"], [14.2, "LEFT"], [14.8, "RIGHT"], [15.6, "SHOT"], [16.2, "B"], [18, "SHOT"], [19, "A"],
+]
+restart_env = { CRASH_MENU_AUTOPILOT = "" }
+restart_input = [["@main_menu"], [2, "SHOT"]]
+restart_timeout = 12
+expect = { exit = ["timeout"], restarts = 1, events = ["main_menu#2"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back'], log_contains = ['video\.renderer -> DIRECT3D 12', 'video\.renderer -> VULKAN', 'restart needed for RENDERER', 'restart accepted \(RENDERER\)', 'exiting with code 4', 'restarted from the settings screen', 'renderer requested: d3d12 \(settings\.toml\)', 'Direct3D 12 renderer on'] }
+
+[profiles.renderizador_sin_cambio]
+description = "SETTINGS > VÍDEO > RENDERIZADOR: RIGHT e LEFT (volta ao valor de antes) e sai: sem pergunta de reinício"
+test = true
+timeout = 30
+audio = false
+userdata_mode = "copy"
+skip_intros = true
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_SETTINGS = "video.fps_limit=30" }
+input = [
+    ["@main_menu"], [9, "RB"], [9.6, "RB"],
+    [10.2, "DOWN"], [10.6, "DOWN"], [11, "DOWN"], [11.4, "DOWN"], [11.8, "DOWN"], [12.2, "DOWN"], [12.6, "DOWN"], [13, "DOWN"],
+    [13.6, "RIGHT"], [14.2, "LEFT"], [14.8, "SHOT"], [15.4, "B"], [17.5, "SHOT"],
+]
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'restart needed', 'apply on the next launch', 'restart accepted'], log_contains = ['video\.renderer -> DIRECT3D 12', 'video\.renderer -> VULKAN', '\[settings\] screen closed'] }
+
+# RF-18: sem reinício automático (CRASH_RESTART=off, que o run_game deixa o perfil trocar): fecha com B, sem pergunta; a mudança vale no próximo arranque.
+[profiles.renderizador_reinicio_apagado]
+description = "CRASH_RESTART=off: trocar o RENDERIZADOR e sair não pergunta nem reinicia; o log diz que vale no próximo arranque"
+test = true
+timeout = 30
+audio = false
+userdata_mode = "copy"
+skip_intros = true
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_SETTINGS = "video.fps_limit=30", CRASH_RESTART = "off" }
+input = [
+    ["@main_menu"], [9, "RB"], [9.6, "RB"],
+    [10.2, "DOWN"], [10.6, "DOWN"], [11, "DOWN"], [11.4, "DOWN"], [11.8, "DOWN"], [12.2, "DOWN"], [12.6, "DOWN"], [13, "DOWN"],
+    [13.6, "RIGHT"], [14.4, "SHOT"], [15, "B"], [17.5, "SHOT"],
+]
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'restart needed', 'restart accepted'], log_contains = ['video\.renderer -> DIRECT3D 12', '\[settings\] RENDERER apply on the next launch', '\[settings\] screen closed'] }
+
+# RF-17: B na pergunta ("depois") fecha sem reiniciar e o valor fica salvo; ao reabrir SETTINGS o valor de abertura já é o novo (g_rendererAtOpen): fecha sem nova pergunta.
+# Depois de fechar, o cursor do menu principal volta ao primeiro item: DOWN x3, A reabrem SETTINGS.
+[profiles.renderizador_reinicio_recusado]
+description = "SETTINGS > VÍDEO > RENDERIZADOR muda, B na pergunta (depois): sem reinício, o valor fica salvo e, ao reabrir SETTINGS, fecha sem nova pergunta"
+test = true
+timeout = 40
+audio = false
+userdata_mode = "copy"
+skip_intros = true
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_SETTINGS = "video.fps_limit=30" }
+input = [
+    ["@main_menu"], [9, "RB"], [9.6, "RB"],
+    [10.2, "DOWN"], [10.6, "DOWN"], [11, "DOWN"], [11.4, "DOWN"], [11.8, "DOWN"], [12.2, "DOWN"], [12.6, "DOWN"], [13, "DOWN"],
+    [13.6, "RIGHT"], [14.2, "B"], [15, "SHOT"], [15.6, "B"], [18, "SHOT"],
+    [18.6, "DOWN"], [19.4, "DOWN"], [20.2, "DOWN"], [21, "A"],
+    [23, "SHOT"], [23.6, "RB"], [24.2, "RB"], [25, "SHOT"], [25.6, "B"], [28, "SHOT"],
+]
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu#2"], log_absent = ['\[fatal\]', '\[crash\]', 'restart accepted', 'exiting with code'], log_contains = ['video\.renderer -> DIRECT3D 12', 'restart needed for RENDERER: asking', 'restart declined', '\[settings\] RENDERER apply on the next launch', '(?s)screen closed.*screen opened.*screen closed'] }
+
+# RF-17 com outra opção que também pede reinício: a pergunta lista as duas.
+[profiles.renderizador_reinicio_junto]
+description = "SETTINGS: IDIOMA (PT-BR) e RENDERIZADOR mudam: a pergunta de reinício lista as duas opções"
+test = true
+timeout = 30
+audio = false
+userdata_mode = "copy"
+skip_intros = true
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_SETTINGS = "video.fps_limit=30" }
+input = [
+    ["@main_menu"], [9, "LEFT"], [9.6, "RB"], [10.2, "RB"],
+    [10.8, "DOWN"], [11.2, "DOWN"], [11.6, "DOWN"], [12, "DOWN"], [12.4, "DOWN"], [12.8, "DOWN"], [13.2, "DOWN"], [13.6, "DOWN"],
+    [14.2, "RIGHT"], [14.8, "B"], [16, "SHOT"], [17, "B"], [19, "SHOT"],
+]
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'restart accepted'], log_contains = ['game\.language -> PORTUGU', 'video\.renderer -> DIRECT3D 12', 'restart needed for IDIOMA, RENDERIZADOR: asking', 'restart declined'] }
+
+# RF-16, RF-21, RF-25: SETTINGS desenhado pelo Direct3D 12 (camada sobre preto) com o fsr/smaa/iluminação do settings.toml; muda a resolução e o upscaler e sai
+# (o renderer "reconfigura": com D3D12 não há alvos que recriar); o jogo segue.
+[profiles.renderizador_d3d12_ajustes]
+description = "SETTINGS desenhado com Direct3D 12: resolução e upscaler mudam, B fecha sem travar, o settings.toml guarda o renderer e o jogo segue"
+test = true
+timeout = 40
+audio = false
+userdata_mode = "copy"
+userdata_from = "tests/userdata_renderer/d3d12_full"
+screenshot_overlay = true
+skip_intros = true
+renderer = "d3d12"
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_RESTART = "off" }
+input = [
+    ["@main_menu"], [9, "RB"], [9.6, "RB"], [10.2, "SHOT"],
+    [10.8, "DOWN"], [11.4, "RIGHT"], [12, "RIGHT"], [12.6, "RB"], [13.2, "SHOT"], [13.8, "RIGHT"], [14.4, "SHOT"], [15, "B"], [18, "SHOT"], [24, "SHOT"],
+]
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], min_frames = 900, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'restart needed'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on', 'Direct3D 12: GPU .* by the launcher.s rule: DLSS (yes|no), FSR (yes|no)', 'video\.resolution -> 1920x1080', 'graphics\.upscaler ->', '\[settings\] renderer options changed: applying them now', '\[gpu\] reconfigured: internal resolution 1920x1080', '\[settings\] screen closed'] }
+
+# RF-32: com Direct3D 12 e uma GPU que a regra do launcher dá por não NVIDIA, o DLSS guardado sai em cinza e o RIGHT/LEFT não volta a ele.
+[profiles.renderizador_d3d12_dlss_cinza]
+description = "Direct3D 12 + CRASH_GPU_VENDOR=amd + dlss guardado: SETTINGS mostra DLSS (REQUIRES NVIDIA RTX) em cinza e, sem tocar a linha, o settings.toml segue com dlss"
+test = true
+timeout = 30
+audio = false
+userdata_mode = "copy"
+userdata_from = "tests/userdata_renderer/d3d12_dlss"
+skip_intros = true
+renderer = "d3d12"
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_RESTART = "off", CRASH_GPU_VENDOR = "amd" }
+input = [["@main_menu"], [9, "RB"], [9.6, "RB"], [10.2, "RB"], [11.5, "SHOT"], [12, "B"], [14, "SHOT"]]
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'graphics\.upscaler ->'], log_contains = ['Direct3D 12: GPU .* \(AMD, CRASH_GPU_VENDOR\) by the launcher.s rule: DLSS no, FSR yes', 'Direct3D 12: upscaler dlss off \(Vulkan only for now\); settings\.toml keeps it', '\[settings\] screen closed'] }
+
+[profiles.renderizador_d3d12_dlss_salta]
+description = "Direct3D 12 + CRASH_GPU_VENDOR=amd + dlss guardado: LEFT/RIGHT na linha do upscaler pulam o DLSS (FSR e OFF, nunca DLSS)"
+test = true
+timeout = 30
+audio = false
+userdata_mode = "copy"
+userdata_from = "tests/userdata_renderer/d3d12_dlss"
+skip_intros = true
+renderer = "d3d12"
+env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_RESTART = "off", CRASH_GPU_VENDOR = "amd" }
+input = [["@main_menu"], [9, "RB"], [9.6, "RB"], [10.2, "RB"], [11, "RIGHT"], [11.6, "SHOT"], [12.2, "LEFT"], [12.8, "LEFT"], [13.4, "SHOT"], [14, "LEFT"], [14.6, "RIGHT"], [15.2, "RIGHT"], [15.8, "RIGHT"], [16.4, "B"], [18, "SHOT"]]
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'graphics\.upscaler -> DLSS'], log_contains = ['DLSS no, FSR yes', 'graphics\.upscaler -> FSR 3\.1', 'graphics\.upscaler -> OFF', '\[settings\] screen closed'] }
 
 [profiles.menu]
 description = "Pula as intros (skip_intros: sem vídeos de logo e sem tela de título) e chega ao menu principal com música"

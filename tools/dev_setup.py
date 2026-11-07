@@ -11,6 +11,8 @@ What it does, in order (each step skips what is already there):
    tools\\XenonRecomp\\. Nothing is copied, and git ignores all of them.
 2. Copies the third-party binaries and SDK headers the build needs (DLSS, DXC, FFmpeg, FSR) and the
    subtitle texts, which are not in git. They are copied, not linked: the D3D12 work changes them.
+   dxil.dll (the DXIL validator the Direct3D 12 renderer needs) is downloaded from the official DXC
+   release when the installation's copy of DXC does not have it (an older installation).
 3. Writes the game folder (<install>\\game) into config/local.toml, for tools/run_game.py.
 4. Turns on the repository's git hooks (.githooks: no game files, no direct push to main).
 5. Configures and builds build\\ with the bundled toolchain (tools/buildenv.py).
@@ -89,6 +91,16 @@ def copy_third_party(project):
             print(f"  {target.relative_to(ROOT).as_posix()}: copied")
 
 
+def fetch_dxil():
+    """dxil.dll, from the official DXC release (SHA-256 checked by setup.py), if the copied DXC lacks it."""
+    import setup as crash_setup  # tools/setup.py, the same folder
+    dxil = ROOT / "thirdparty" / "dxc" / "bin" / "dxil.dll"
+    before = dxil.stat().st_mtime_ns if dxil.is_file() else None
+    crash_setup.fetch_dxc()  # checks the SHA-256 of a file already there; replaces it if it differs
+    kept = before is not None and dxil.stat().st_mtime_ns == before
+    print("  thirdparty/dxc/bin/dxil.dll: already there, SHA-256 checked" if kept else "  thirdparty/dxc/bin/dxil.dll: downloaded")
+
+
 def set_game_folder(install):
     game = install / "game"
     current = buildenv.local().get("paths", {}).get("game")
@@ -135,6 +147,8 @@ def main():
     link_folders(project)
     step("Copying the third-party files")
     copy_third_party(project)
+    step("DXIL validator (dxil.dll) for Direct3D 12")
+    fetch_dxil()
     step("Game folder for the tests")
     set_game_folder(install)
     step("Git hooks")

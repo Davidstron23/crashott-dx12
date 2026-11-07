@@ -131,7 +131,7 @@ endif()
 add_executable(CrashRecomp ${CRASH_RUNTIME_SOURCES})
 if (WIN32)
     target_link_libraries(CrashRecomp PRIVATE CrashPPC XexImage ${CRASH_XAUDIO2_LIB} winmm version ole32
-        hid setupapi windowscodecs)
+        hid setupapi windowscodecs d3d12 dxgi)
 else()
     # tools/linux_sdl3.py's build (every backend by dlopen, glibc 2.29) goes next to the exe; the
     # Steam Runtime's (setup.py's .debs) doesn't: it needs libraries a bare SteamOS may lack.
@@ -287,6 +287,14 @@ if (CRASH_DXC_DLL)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CRASH_DXC_DLL} $<TARGET_FILE_DIR:CrashRecomp>)
 else()
     message(STATUS "${CRASH_DXC_NAME} not found (thirdparty/dxc/bin or the Vulkan SDK): the Vulkan renderer can only use cached shaders")
+endif()
+# dxil.dll (the same DXC release): Microsoft's signed DXIL validator. dxcompiler.dll loads it from
+# the exe's folder to sign the shaders of the Direct3D 12 renderer, which refuses unsigned DXIL.
+if (WIN32 AND EXISTS ${CMAKE_SOURCE_DIR}/thirdparty/dxc/bin/dxil.dll)
+    add_custom_command(TARGET CrashRecomp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/thirdparty/dxc/bin/dxil.dll $<TARGET_FILE_DIR:CrashRecomp>)
+elseif (WIN32)
+    message(STATUS "thirdparty/dxc/bin/dxil.dll not found: Direct3D 12 falls back to Vulkan (unsigned shaders)")
 endif()
 
 endif()  # NOT CRASH_INSTALLER_ONLY: the game

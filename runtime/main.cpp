@@ -20,6 +20,8 @@
 //               exits (settings/prompt_icons.h)
 //   --precompile-shaders  translates and compiles every known game shader, both variants, into
 //               userdata\shadercache on every core, and exits (gpu/shader_warmup.h)
+//   --renderer vulkan|d3d12  the graphics API of this run; wins over CRASH_RENDERER and the settings
+//               (gpu/renderer_choice.h)
 //   --restarted <pid>  given by a restart from the settings screen (settings.h, Restart): waits for
 //               the previous process to exit and skips the intros
 // Environment: CRASH_TIMEOUT=<seconds> stops the run (with a report) after that long.
@@ -141,6 +143,12 @@ int main(int argc, char** argv)
             return settings::menu::Preview(argv[i + 1]);
         if (strcmp(argv[i], "--prompt-preview") == 0)
             return settings::prompts::Preview(argv[i + 1]);
+    }
+    for (int i = 1; i < argc; i++)
+    {
+        // A value that is another option ("--renderer --game X") means --renderer came without one.
+        if (strcmp(argv[i], "--renderer") == 0)
+            gpu::renderer::SetRendererArgument(i + 1 < argc && strncmp(argv[i + 1], "--", 2) != 0 ? argv[i + 1] : nullptr);
     }
     StartWatchdog();
 

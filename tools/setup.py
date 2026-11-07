@@ -117,10 +117,13 @@ DOWNLOADS = [
     (FSR + "PrebuiltSignedDLL/amd_fidelityfx_vk.dll", "thirdparty/fsr/bin/amd_fidelityfx_vk.dll", "a1624cc4238fef046f30c4d80ce3f47be63fc5f5373f49e3ee9edb9960f54c78"),
 ]
 # HLSL -> SPIR-V for the Vulkan renderer: dxcompiler.dll of Microsoft's official DXC release (signed;
-# the Windows SDK's copy has no SPIR-V backend), with its licenses.
+# the Windows SDK's copy has no SPIR-V backend), with its licenses. The same zip carries dxil.dll, the
+# DXIL validator that signs the shaders of the Direct3D 12 renderer (docs/decisions/0002-dxil-signing.md).
 DXC_ZIP = ("https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/dxc_2026_09_29.zip",
            "ad31b1fc8443175d204f77a611fdb3ef2ec42759bdc2f1167368de24a4a7e7f1")
-DXC_FILES = {"bin/x64/dxcompiler.dll": "dxcompiler.dll", "LICENSE-MS.txt": "LICENSE-MS.txt", "LICENSE-LLVM.txt": "LICENSE-LLVM.txt"}
+DXC_FILES = {"bin/x64/dxcompiler.dll": "dxcompiler.dll", "bin/x64/dxil.dll": "dxil.dll", "LICENSE-MS.txt": "LICENSE-MS.txt", "LICENSE-LLVM.txt": "LICENSE-LLVM.txt"}
+# bin/x64/dxil.dll inside DXC_ZIP (already verified as a whole; checked again once unpacked).
+DXIL_SHA256 = "64be2368211d257a038a7d4ea6bb3e24c878eb8d588c7b8414fccf759b69c2ac"
 FFMPEG_ZIP = ("https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/"
               "ffmpeg-n8.1.3-9-g29e619e767-win64-lgpl-shared-8.1.zip",
               "3e47bda1607740550141e37c0e49d1e5182b34699f15adfd137ee266d346811a")
@@ -553,17 +556,29 @@ def fetch_thirdparty(dlss=True):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with z.open(info) as src, open(target, "wb") as out:
                         shutil.copyfileobj(src, out)
-    dxc = ROOT / "thirdparty" / "dxc" / "bin"
-    if not all((dxc / name).is_file() for name in DXC_FILES.values()):
-        url, digest = DXC_ZIP
-        archive = download(url, ROOT / "build" / "downloads" / Path(url).name, digest, "DirectX Shader Compiler (SPIR-V)")
-        dxc.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(archive) as z:
-            for source, name in DXC_FILES.items():
-                with z.open(source) as src, open(dxc / name, "wb") as out:
-                    shutil.copyfileobj(src, out)
+    fetch_dxc()
     progress(1.0)
     say("FFmpeg, DXC, FSR" + (" e DLSS" if dlss else "") + " ok")
+
+
+def fetch_dxc():
+    """dxcompiler.dll and dxil.dll (+ licenses) from the official DXC release, into thirdparty/dxc/bin."""
+    dxc = ROOT / "thirdparty" / "dxc" / "bin"
+    # A dxil.dll that is not the pinned one is never kept: CMake would copy it next to the exe.
+    if (dxc / "dxil.dll").is_file() and sha256(dxc / "dxil.dll") != DXIL_SHA256:
+        (dxc / "dxil.dll").unlink()
+    if all((dxc / name).is_file() for name in DXC_FILES.values()):
+        return
+    url, digest = DXC_ZIP
+    archive = download(url, ROOT / "build" / "downloads" / Path(url).name, digest, "DirectX Shader Compiler (SPIR-V, DXIL)")
+    dxc.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive) as z:
+        for source, name in DXC_FILES.items():
+            with z.open(source) as src, open(dxc / name, "wb") as out:
+                shutil.copyfileobj(src, out)
+    if sha256(dxc / "dxil.dll") != DXIL_SHA256:
+        (dxc / "dxil.dll").unlink()
+        fail("dxil.dll: o arquivo não confere (SHA-256)")
 
 
 def recompile():

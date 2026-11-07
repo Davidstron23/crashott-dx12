@@ -29,6 +29,7 @@
 #endif
 
 #include "../runtime/fs/vfs.h"
+#include "../runtime/gpu/gpu_detect.h"
 #include "../runtime/gpu/png_writer.h"
 #include "../runtime/paths.h"
 #include "../runtime/gpu/dlss_module/crash_dlss.h"
@@ -638,7 +639,8 @@ namespace
 
     void Change(Item item, int direction)
     {
-        opt::Change(item, g_values, direction, OptionContext());
+        if (opt::Change(item, g_values, direction, OptionContext()))
+            Log("[launcher] %s -> %s", opt::Key(item), Value(item).c_str());
     }
 
     // A (Enter, click): change forward, or the row's own action.

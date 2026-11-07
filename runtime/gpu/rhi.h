@@ -1,7 +1,8 @@
 #pragma once
 
 // Rendering hardware interface: what the Xenos renderer (xenos_renderer.cpp) and its passes (smaa,
-// lighting, overlay) need from a graphics API, implemented by rhi_vulkan.cpp (Vulkan 1.3). It kept
+// lighting, overlay) need from a graphics API, implemented by rhi_vulkan.cpp (Vulkan 1.3) and
+// rhi_d3d12_win32.cpp (Direct3D 12). It kept
 // the shape it had when Direct3D 12 was a second backend (until 2026-10-23), so another API (Metal,
 // a native Linux build's WSI) only needs a new Device.
 //
@@ -401,6 +402,8 @@ namespace gpu::rhi
 
     // Creates the device and the swap chain on `info.window`; null (and logged) if unavailable.
     Device* CreateVulkan(const DeviceInfo& info);
+    // Windows only (rhi_d3d12_win32.cpp): Direct3D 12 with DXIL shaders; null (and logged) if unavailable.
+    Device* CreateD3D12(const DeviceInfo& info);
 
     // Compiles without a device (--test-shaders): true if `hlsl` compiles to SPIR-V.
     bool TestCompile(Stage stage, const std::string& hlsl, const char* name, Layout layout, const std::filesystem::path& shaderCache);

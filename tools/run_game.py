@@ -456,6 +456,13 @@ def environment(settings, run_dir, profile=None):
         env["CRASH_AUDIO_DUMP_SECONDS"] = str(settings.get("audio_dump_seconds", 60))
     if settings.get("log_imports"):
         env["CRASH_LOG_IMPORTS"] = ",".join(settings["log_imports"])
+    # renderer: "" = what settings.toml says | "vulkan" | "d3d12" (CRASH_RENDERER, runtime/gpu/renderer_choice.h).
+    # The profile's own `env` goes after it, so it can set (or garble) CRASH_RENDERER itself.
+    renderer = settings.get("renderer")
+    if renderer:
+        if str(renderer).lower() not in ("vulkan", "d3d12"):
+            raise SystemExit(f"renderer = {renderer!r}: use vulkan ou d3d12")
+        env["CRASH_RENDERER"] = str(renderer).lower()
     for key, value in settings.get("env", {}).items():
         env[key] = str(value)
     # A restart from the settings screen exits with code 4 and the runner starts the game again
@@ -466,11 +473,13 @@ def environment(settings, run_dir, profile=None):
 
 def restart_environment(env, settings, run_dir, launch):
     """The environment of launch number `launch` (1 = the first restart): the per-run overrides of
-    the first launch (CRASH_SETTINGS is already in its settings.toml; input, replay and recording
-    would start over) are dropped, and screenshots / frame times go to reinicio_<launch>/."""
+    the first launch (CRASH_SETTINGS is already in its settings.toml, and CRASH_RENDERER would
+    override the renderer the player just chose; input, replay and recording would start over) are dropped,
+    and screenshots / frame times go to reinicio_<launch>/."""
     env = {k: v for k, v in env.items()
            if k not in ("CRASH_SETTINGS", "CRASH_INPUT_SCRIPT", "CRASH_REPLAY", "CRASH_RECORD_INPUT",
-                        "CRASH_SCREENSHOTS", "CRASH_SCREENSHOT_TIMES", "CRASH_AUDIO_DUMP", "CRASH_BOOT")}
+                        "CRASH_SCREENSHOTS", "CRASH_SCREENSHOT_TIMES", "CRASH_AUDIO_DUMP", "CRASH_BOOT",
+                        "CRASH_RENDERER")}
     folder = run_dir / f"reinicio_{launch}"
     folder.mkdir(exist_ok=True)
     env["CRASH_SCREENSHOT_DIR"] = str(folder)
