@@ -106,6 +106,49 @@ userdata_mode = "copy"
 screenshots = [300, 540]
 expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]'] }
 
+# Spec 001, T1 (renderer D3D12): o mesmo boot, com o renderizador escolhido e as linhas de log (renderer_choice.h,
+# rhi_d3d12_win32.cpp) que distinguem cada caso. As capturas pretas de D3D12 se conferem fora (comparar com a base).
+[profiles.renderizador_vulkan_boot]
+description = "Vulkan por padrão (ou forçado com --set renderer=vulkan): sem nada de Direct3D 12 no log"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+screenshots = [300, 540]
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'Direct3D 12', 'falling back'], log_contains = ['\[gpu\] renderer requested: vulkan \((default|CRASH_RENDERER)\)', '\[gpu\] Vulkan renderer on .+; shader cache .+'] }
+
+[profiles.renderizador_d3d12_boot]
+description = "renderer=d3d12 liga o Direct3D 12 (só a camada do port, sobre preto), sem voltar ao Vulkan"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+screenshots = [300, 540]
+renderer = "d3d12"
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] Direct3D 12: the game.s own image is not drawn yet', '\[gpu\] Direct3D 12: shader warm-up off'] }
+
+[profiles.renderizador_d3d12_falha_dispositivo]
+description = "CRASH_D3D12_FAIL=device: o Direct3D 12 falha de propósito e o jogo volta ao Vulkan na mesma janela"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+screenshots = [300, 540]
+renderer = "d3d12"
+env = { CRASH_D3D12_FAIL = "device" }
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'Direct3D 12 renderer on', 'neither Direct3D 12 nor Vulkan', 'shader warm-up off'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] CRASH_D3D12_FAIL=device: Direct3D 12 fails on purpose', '\[gpu\] Direct3D 12 could not start \((\d{1,3}|[12]\d{3}|3000) ms\): falling back to Vulkan', '\[gpu\] Vulkan renderer on .+; shader cache .+'] }
+
+[profiles.renderizador_d3d12_falha_desconhecida]
+description = "CRASH_D3D12_FAIL com um valor desconhecido só avisa no log: o Direct3D 12 liga igual"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+screenshots = [300, 540]
+renderer = "d3d12"
+env = { CRASH_D3D12_FAIL = "foo" }
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'fails on purpose'], log_contains = ['\[gpu\] CRASH_D3D12_FAIL=foo ignored \(device \| shaders\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+'] }
+
 [profiles.menu]
 description = "Pula as intros (skip_intros: sem vídeos de logo e sem tela de título) e chega ao menu principal com música"
 test = true
