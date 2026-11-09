@@ -1682,7 +1682,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
         {
             m_hwnd = HWND(info.window);
             m_shaderCache = info.shaderCache;
-            m_dxilCache = DxilCacheFolder(info.shaderCache);
+            // CRASH_D3D12_FAIL=shaders falls back to Vulkan: no DXIL cache is created or touched.
+            m_dxilCache = m_failShaders ? std::filesystem::path() : DxilCacheFolder(info.shaderCache);
             if (!m_dxilCache.empty())
             {
                 std::error_code error;
