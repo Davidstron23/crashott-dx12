@@ -407,6 +407,10 @@ namespace gpu::rhi
 
     // Compiles without a device (--test-shaders): true if `hlsl` compiles to SPIR-V.
     bool TestCompile(Stage stage, const std::string& hlsl, const char* name, Layout layout, const std::filesystem::path& shaderCache);
+#ifdef _WIN32
+    // The same for Direct3D 12 (--test-shaders --renderer d3d12): DXIL, through userdata\shadercache_dxil next to `shaderCache`.
+    bool TestCompileDxil(Stage stage, const std::string& hlsl, const char* name, const std::filesystem::path& shaderCache);
+#endif
 
     // Shared by the backends (rhi_common.cpp).
     uint64_t HashBytes(const void* data, size_t size, uint64_t seed = 0);

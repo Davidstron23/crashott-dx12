@@ -13,6 +13,7 @@
 # Game shaders translated to DXBC by the runtime
 /tests/shadercache/
 **/shadercache/
+**/shadercache_dxil/
 **/shaderdump/
 **/texture_dump/
 # Game screenshots (a few chosen ones live in docs/screenshots/)

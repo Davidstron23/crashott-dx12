@@ -345,9 +345,10 @@ def prepare_userdata(config, settings, run_dir):
     if (source / "content").is_dir():
         shutil.copytree(source / "content", copy / "content")
     # The tests' own shader cache (only saves compile time); merged back after the run.
-    cache = test_shadercache(config)
-    if cache.is_dir():
-        shutil.copytree(cache, copy / "shadercache")
+    # Direct3D 12's DXIL cache is a sibling folder (shadercache_dxil), copied and merged the same way.
+    for cache, name in test_caches(config):
+        if cache.is_dir():
+            shutil.copytree(cache, copy / name)
     return copy
 
 
@@ -355,18 +356,25 @@ def test_shadercache(config):
     return resolve(config["paths"].get("test_shadercache", "tests/shadercache"))
 
 
+def test_caches(config):
+    """(folder in tests, folder name in the userdata) of the SPIR-V cache and of the DXIL one."""
+    spirv = test_shadercache(config)
+    return [(spirv, "shadercache"), (spirv.parent / (spirv.name + "_dxil"), "shadercache_dxil")]
+
+
 def merge_shadercache(config, userdata):
-    """Shaders compiled during a copy-mode run go into the tests' cache (new files only), so the
+    """Shaders compiled during a copy-mode run go into the tests' caches (new files only), so the
     next runs do not compile them again at boot (that slows the boot and desyncs input scripts)."""
-    source, cache = userdata / "shadercache", test_shadercache(config)
-    if not source.is_dir():
-        return 0
-    cache.mkdir(parents=True, exist_ok=True)
     added = 0
-    for file in source.iterdir():
-        if file.is_file() and not (cache / file.name).exists():
-            shutil.copy2(file, cache / file.name)
-            added += 1
+    for cache, name in test_caches(config):
+        source = userdata / name
+        if not source.is_dir():
+            continue
+        cache.mkdir(parents=True, exist_ok=True)
+        for file in source.iterdir():
+            if file.is_file() and not (cache / file.name).exists():
+                shutil.copy2(file, cache / file.name)
+                added += 1
     return added
 
 

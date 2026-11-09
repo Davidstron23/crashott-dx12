@@ -31,6 +31,8 @@ __CRT_UUID_DECL(IDxcBlob, 0x8BA5FB08, 0x5195, 0x40E2, 0xAC, 0x58, 0x0D, 0x98, 0x
 __CRT_UUID_DECL(IDxcBlobUtf8, 0x3DA636C9, 0xBA71, 0x4024, 0xA3, 0x01, 0x30, 0xCB, 0xF1, 0x25, 0x30, 0x5B)
 __CRT_UUID_DECL(IDxcResult, 0x58346CDA, 0xDDE7, 0x4497, 0x94, 0x61, 0x6F, 0x87, 0xAF, 0x5E, 0x06, 0x59)
 __CRT_UUID_DECL(IDxcCompiler3, 0x228B4687, 0x5A6A, 0x4730, 0x90, 0x0C, 0x97, 0x02, 0xB2, 0x20, 0x3F, 0x54)
+__CRT_UUID_DECL(IDxcVersionInfo, 0xB04F5B50, 0x2059, 0x4F12, 0xA8, 0xFF, 0xA1, 0xE0, 0xCD, 0xE1, 0xCC, 0x7E)
+__CRT_UUID_DECL(IDxcVersionInfo2, 0xFB6904C4, 0x42F0, 0x4B62, 0x9C, 0x46, 0x98, 0x3A, 0xF7, 0xDA, 0x7C, 0x83)
 #endif
 
 #include <algorithm>
@@ -282,6 +284,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
         IDxcCompiler3* g_dxc = nullptr;
         std::mutex g_dxcMutex;
 
+        void ComputeDxcFingerprint();
+
         void LoadDxc()
         {
             void* module = plat::OpenLibrary("dxcompiler.dll");
@@ -295,7 +299,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
             {
                 Log("[gpu] Direct3D 12: dxcompiler.dll has no DxcCreateInstance / compiler");
                 g_dxc = nullptr;
+                return;
             }
+            ComputeDxcFingerprint();
         }
 
         // Whether DXC signed the container: "DXBC", then a 16-byte hash. dxil.dll (the validator) fills it in;
@@ -324,13 +330,10 @@ float4 main(uint id : SV_VertexID) : SV_Position
         }
 
         // `dump` is userdata\shadercache (empty: nothing is written); the failed HLSL goes to its sibling shaderdump\.
-        // There is no disk cache for DXIL: the passes are few.
-        bool CompileDxil(Stage stage, const std::string& hlsl, const char* name, const std::filesystem::path& dump, std::vector<uint8_t>& code,
-                         uint64_t* compiles, uint64_t* failures)
+        // The disk cache is CompileDxil's, below; the caller has already loaded DXC.
+        bool CompileDxilRaw(Stage stage, const std::string& hlsl, const char* name, const std::filesystem::path& dump, std::vector<uint8_t>& code,
+                            uint64_t* compiles, uint64_t* failures)
         {
-            std::call_once(g_dxcOnce, LoadDxc);
-            if (!g_dxc)
-                return false;
             const wchar_t* profile = stage == Stage::Pixel ? L"ps_6_0" : stage == Stage::Geometry ? L"gs_6_0" : L"vs_6_0";
             const wchar_t* arguments[] = { L"-T", profile, L"-E", L"main", L"-HV", L"2018", L"-Wno-conversion", L"-Wno-ignored-attributes" };
             DxcBuffer source{ hlsl.data(), hlsl.size(), DXC_CP_UTF8 };
@@ -373,6 +376,109 @@ float4 main(uint id : SV_VertexID) : SV_Position
             return true;
         }
 
+        // DXIL disk cache (spec 002): userdata\shadercache_dxil\<hash>.dxil, a sibling of the SPIR-V one so that Direct3D 12 never
+        // touches shadercache\. File = header + the DXIL container. The name is the hash of the stage and the final HLSL; the header
+        // says which compiler and arguments made it, so an entry of another DXC is replaced, not trusted.
+        constexpr uint32_t DXIL_CACHE_VERSION = 1;  // bump when the header or the arguments change
+        constexpr const char* DXIL_CACHE_ARGUMENTS = "-E main -HV 2018 -Wno-conversion -Wno-ignored-attributes";
+        struct DxilCacheHeader
+        {
+            char magic[4];
+            uint32_t version;
+            uint64_t fingerprint;  // DXC (version, flags, commit) + arguments
+            uint32_t stage;
+            uint32_t reserved;
+            uint64_t hlslHash;
+            uint64_t size;         // bytes of the DXIL that follow
+        };
+        static_assert(sizeof(DxilCacheHeader) == 40);
+
+        uint64_t g_dxcFingerprint = 0;  // set by LoadDxc (0 = unknown compiler: nothing is cached)
+
+        void ComputeDxcFingerprint()
+        {
+            IDxcVersionInfo* version = nullptr;
+            if (FAILED(g_dxc->QueryInterface(__uuidof(IDxcVersionInfo), reinterpret_cast<void**>(&version))) || !version)
+                return;
+            uint32_t major = 0, minor = 0, flags = 0, commits = 0;
+            std::string commit;
+            version->GetVersion(&major, &minor);
+            version->GetFlags(&flags);
+            IDxcVersionInfo2* version2 = nullptr;
+            if (SUCCEEDED(version->QueryInterface(__uuidof(IDxcVersionInfo2), reinterpret_cast<void**>(&version2))) && version2)
+            {
+                char* hash = nullptr;
+                if (SUCCEEDED(version2->GetCommitInfo(&commits, &hash)) && hash)
+                {
+                    commit = hash;
+                    CoTaskMemFree(hash);
+                }
+                version2->Release();
+            }
+            version->Release();
+            char text[256];
+            snprintf(text, sizeof(text), "dxc %u.%u/%u/%u/%s/%s", major, minor, flags, commits, commit.c_str(), DXIL_CACHE_ARGUMENTS);
+            g_dxcFingerprint = HashBytes(text, strlen(text));
+        }
+
+        bool ValidDxilCacheEntry(const std::vector<uint8_t>& file, Stage stage, uint64_t hlslHash, std::vector<uint8_t>& code)
+        {
+            DxilCacheHeader header;
+            if (file.size() <= sizeof(header))
+                return false;
+            memcpy(&header, file.data(), sizeof(header));
+            if (memcmp(header.magic, "CDXC", 4) != 0 || header.version != DXIL_CACHE_VERSION || header.fingerprint != g_dxcFingerprint ||
+                header.stage != uint32_t(stage) || header.hlslHash != hlslHash || header.size != file.size() - sizeof(header))
+                return false;
+            code.assign(file.begin() + sizeof(header), file.end());
+            // DXBC container: its size field (offset 24) must match, and dxil.dll must have signed it.
+            if (code.size() < 28)
+                return false;
+            uint32_t containerSize = 0;
+            memcpy(&containerSize, code.data() + 24, 4);
+            return containerSize == code.size() && DxilSigned(code);
+        }
+
+        // The game's and the passes' DXIL, from the disk cache when a valid entry is there (RF-9), compiled and stored otherwise
+        // (RF-8). A damaged or old entry is compiled again and overwritten (RF-10). `cache` empty: no disk cache.
+        bool CompileDxil(Stage stage, const std::string& hlsl, const char* name, const std::filesystem::path& dump, const std::filesystem::path& cache,
+                         std::vector<uint8_t>& code, uint64_t* compiles, uint64_t* failures, uint64_t* cached)
+        {
+            std::call_once(g_dxcOnce, LoadDxc);
+            if (!g_dxc)
+                return false;
+            uint64_t hlslHash = HashBytes(hlsl.data(), hlsl.size());
+            char keyText[32];
+            snprintf(keyText, sizeof(keyText), "dxil-%u/%d", DXIL_CACHE_VERSION, int(stage));
+            uint64_t key = HashBytes(hlsl.data(), hlsl.size(), HashBytes(keyText, strlen(keyText)));
+            bool useCache = !cache.empty() && g_dxcFingerprint != 0;
+            std::vector<uint8_t> file;
+            if (useCache && ReadCachedShader(cache, key, "dxil", file) && ValidDxilCacheEntry(file, stage, hlslHash, code))
+            {
+                if (cached)
+                    (*cached)++;
+                return true;
+            }
+            if (!CompileDxilRaw(stage, hlsl, name, dump, code, compiles, failures))
+                return false;
+            // Only a signed container is worth keeping: the reader would throw an unsigned one away.
+            if (useCache && DxilSigned(code))
+            {
+                DxilCacheHeader header{ { 'C', 'D', 'X', 'C' }, DXIL_CACHE_VERSION, g_dxcFingerprint, uint32_t(stage), 0, hlslHash, code.size() };
+                file.resize(sizeof(header) + code.size());
+                memcpy(file.data(), &header, sizeof(header));
+                memcpy(file.data() + sizeof(header), code.data(), code.size());
+                WriteCachedShader(cache, key, "dxil", file.data(), file.size());  // a failed write only means no cache
+            }
+            return true;
+        }
+
+        // userdata\shadercache -> userdata\shadercache_dxil (empty stays empty).
+        std::filesystem::path DxilCacheFolder(const std::filesystem::path& shaderCache)
+        {
+            return shaderCache.empty() ? shaderCache : shaderCache.parent_path() / "shadercache_dxil";
+        }
+
         class D3D12Device final : public Device
         {
         public:
@@ -410,7 +516,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             Shader* CreateShader(Stage stage, const std::string& hlsl, const char* name, Layout layout) override;
             Pipeline* GetDrawPipeline(const DrawPipelineKey& key, bool deferrable, bool* deferred) override;
             void PrecompileProgress(uint32_t& done, uint32_t& total) override { done = total = 0; }
-            void SetShaderCompilation(ShaderCompilation) override {}
+            void SetShaderCompilation(ShaderCompilation mode) override { NoteShaderCompilation(mode); }
             void PrewarmShader(Stage, const std::string&) override {}
             Pipeline* CreatePassPipeline(const PassPipelineDesc& desc) override;
 
@@ -469,7 +575,10 @@ float4 main(uint id : SV_VertexID) : SV_Position
             void ReleaseDescriptors(D3D12Texture* texture);
 
             std::string m_adapterName;
-            std::filesystem::path m_shaderCache;
+            std::filesystem::path m_shaderCache;      // userdata\shadercache: only the failed HLSL goes near it (shaderdump\)
+            std::filesystem::path m_dxilCache;        // userdata\shadercache_dxil
+            bool m_compilationNoted = false;
+            void NoteShaderCompilation(ShaderCompilation mode);
             HWND m_hwnd = nullptr;
             ComPtr<IDXGIFactory4> m_factory;
             ComPtr<ID3D12Device> m_device;
@@ -523,7 +632,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
             Timing m_timing;
             struct
             {
-                uint64_t submits = 0, passPipelines = 0, drawPipelines = 0, dxilCompiles = 0, dxilFailures = 0;
+                uint64_t submits = 0, passPipelines = 0, drawPipelines = 0, dxilCompiles = 0, dxilFailures = 0, dxilCached = 0;
+                uint64_t shaderCompiles = 0, shaderCached = 0, shaderFailures = 0;  // the game's shaders (CreateShader), RF-11
             } m_stats;
         };
 
@@ -884,12 +994,12 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         // Shaders, draw pipelines and draws ---------------------------------------------------------
 
-        // shortcut: no disk cache (every start compiles the shaders it uses), spec 002 T2 adds it. The recording thread is the
-        // only caller (the warm-up is off with Direct3D 12), so m_shaders needs no lock.
+        // The recording thread is the only caller (the warm-up is off with Direct3D 12), so m_shaders needs no lock.
         Shader* D3D12Device::CreateShader(Stage stage, const std::string& hlsl, const char* name, Layout)
         {
             auto shader = std::make_unique<D3D12Shader>();
-            if (!CompileDxil(stage, hlsl, name, m_shaderCache, shader->code, &m_stats.dxilCompiles, &m_stats.dxilFailures))
+            if (!CompileDxil(stage, hlsl, name, m_shaderCache, m_dxilCache, shader->code, &m_stats.shaderCompiles, &m_stats.shaderFailures,
+                             &m_stats.shaderCached))
                 return nullptr;
             m_shaders.push_back(std::move(shader));
             return m_shaders.back().get();
@@ -1200,9 +1310,11 @@ float4 main(uint id : SV_VertexID) : SV_Position
             std::vector<uint8_t> vsCode, psCode;
             if (desc.vs.empty())
                 vsCode = m_fullscreenVs;
-            else if (!CompileDxil(Stage::Vertex, desc.vs, (desc.name + "_vs").c_str(), m_shaderCache, vsCode, &m_stats.dxilCompiles, &m_stats.dxilFailures))
+            else if (!CompileDxil(Stage::Vertex, desc.vs, (desc.name + "_vs").c_str(), m_shaderCache, m_dxilCache, vsCode, &m_stats.dxilCompiles,
+                                &m_stats.dxilFailures, &m_stats.dxilCached))
                 return nullptr;
-            if (!CompileDxil(Stage::Pixel, desc.ps, (desc.name + "_ps").c_str(), m_shaderCache, psCode, &m_stats.dxilCompiles, &m_stats.dxilFailures))
+            if (!CompileDxil(Stage::Pixel, desc.ps, (desc.name + "_ps").c_str(), m_shaderCache, m_dxilCache, psCode, &m_stats.dxilCompiles,
+                           &m_stats.dxilFailures, &m_stats.dxilCached))
                 return nullptr;
             D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
             pso.pRootSignature = pipeline->rootSignature.Get();
@@ -1417,6 +1529,18 @@ float4 main(uint id : SV_VertexID) : SV_Position
             Log("[gpu] d3d12: %llu submits, %llu pass pipelines, %llu draw pipelines, %llu DXIL compiles (%llu failed)", (unsigned long long)m_stats.submits,
                 (unsigned long long)m_stats.passPipelines, (unsigned long long)m_stats.drawPipelines, (unsigned long long)m_stats.dxilCompiles,
                 (unsigned long long)m_stats.dxilFailures);
+            Log("[gpu] Direct3D 12: game shaders: %llu compiled, %llu from cache, %llu failed", (unsigned long long)m_stats.shaderCompiles,
+                (unsigned long long)m_stats.shaderCached, (unsigned long long)m_stats.shaderFailures);
+        }
+
+        // RF-12: Direct3D 12 compiles shaders on the spot whatever graphics.shader_compilation says (it never changes the setting).
+        void D3D12Device::NoteShaderCompilation(ShaderCompilation mode)
+        {
+            if (mode == ShaderCompilation::Sync || m_compilationNoted)
+                return;
+            m_compilationNoted = true;
+            Log("[gpu] Direct3D 12: graphics.shader_compilation=%s asks for asynchronous compilation; Direct3D 12 compiles synchronously",
+                mode == ShaderCompilation::Aggressive ? "aggressive" : "async");
         }
 
         // Startup ---------------------------------------------------------------------------------
@@ -1426,6 +1550,13 @@ float4 main(uint id : SV_VertexID) : SV_Position
         {
             m_hwnd = HWND(info.window);
             m_shaderCache = info.shaderCache;
+            m_dxilCache = DxilCacheFolder(info.shaderCache);
+            if (!m_dxilCache.empty())
+            {
+                std::error_code error;
+                std::filesystem::create_directories(m_dxilCache, error);  // without it, shaders compile every start
+            }
+            NoteShaderCompilation(info.shaderCompilation);
             // No debug layer (spec 004): info.debug is a Vulkan switch for now.
             if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&m_factory))) ||
                 FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device))))
@@ -1543,7 +1674,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
             }
 
             // The full-screen vertex shader: if even that does not compile, nothing can be shown (the start fails).
-            if (!CompileDxil(Stage::Vertex, FULLSCREEN_VS, "blit_vs", m_shaderCache, m_fullscreenVs, &m_stats.dxilCompiles, &m_stats.dxilFailures))
+            if (!CompileDxil(Stage::Vertex, FULLSCREEN_VS, "blit_vs", m_shaderCache, m_dxilCache, m_fullscreenVs, &m_stats.dxilCompiles,
+                            &m_stats.dxilFailures, &m_stats.dxilCached))
                 return false;
             // Direct3D 12 refuses DXIL that dxil.dll (next to the exe) did not sign: say so up front. The hash alone
             // does not tell: without dxil.dll, DXC's built-in validator still fills in a digest, so the DLL is checked too.
@@ -1574,6 +1706,16 @@ float4 main(uint id : SV_VertexID) : SV_Position
             CreateBackBuffers();
             return true;
         }
+    }
+
+    bool TestCompileDxil(Stage stage, const std::string& hlsl, const char* name, const std::filesystem::path& shaderCache)
+    {
+        std::filesystem::path cache = DxilCacheFolder(shaderCache);
+        std::error_code error;
+        if (!cache.empty())
+            std::filesystem::create_directories(cache, error);
+        std::vector<uint8_t> code;
+        return CompileDxil(stage, hlsl, name, shaderCache, cache, code, nullptr, nullptr, nullptr);
     }
 
     Device* CreateD3D12(const DeviceInfo& info)

@@ -432,6 +432,7 @@ namespace gpu::renderer
         uint32_t g_aaWidth = 0, g_aaHeight = 0;
         std::filesystem::path g_shaderCacheDir;
         bool g_dumpShaders = false;
+        bool g_testDxil = false;  // --test-shaders with Direct3D 12: compile to DXIL instead of SPIR-V
 
         // Caches.
         std::unordered_map<uint64_t, RenderTarget> g_renderTargets;
@@ -549,7 +550,12 @@ namespace gpu::renderer
                 else
                 {
                     // --test-shaders: compiled only.
-                    entry->failed = !rhi::TestCompile(stage, entry->info.hlsl, name, rhi::Layout::Draw, g_shaderCacheDir);
+#ifdef _WIN32
+                    if (g_testDxil)
+                        entry->failed = !rhi::TestCompileDxil(stage, entry->info.hlsl, name, g_shaderCacheDir);
+                    else
+#endif
+                        entry->failed = !rhi::TestCompile(stage, entry->info.hlsl, name, rhi::Layout::Draw, g_shaderCacheDir);
                 }
             }
             return entry->failed ? nullptr : entry;
@@ -3927,10 +3933,19 @@ float4 main(float4 position : SV_Position) : SV_Target
 
     int TestShaders(const std::filesystem::path& folder)
     {
-        // HLSL -> SPIR-V with DXC, as the Vulkan renderer compiles them.
+        // HLSL -> SPIR-V with DXC, as the Vulkan renderer compiles them; with Direct3D 12 requested (same priority as at
+        // start-up), -> DXIL through the DXIL cache, and shadercache\ is not even created.
         g_shaderCacheDir = vfs::UserDataDir() / "shadercache";
         std::error_code error;
-        std::filesystem::create_directories(g_shaderCacheDir, error);
+        g_testDxil = RequestedRenderer().renderer == settings::Renderer::D3D12;
+#ifndef _WIN32
+        if (g_testDxil)
+            Log("[test] Direct3D 12 is Windows only: compiling to SPIR-V");
+        g_testDxil = false;
+#endif
+        if (!g_testDxil)
+            std::filesystem::create_directories(g_shaderCacheDir, error);
+        Log("[test] compiling to %s", g_testDxil ? "DXIL (Direct3D 12)" : "SPIR-V (Vulkan)");
         g_dumpShaders = true;
 
         int failures = 0, total = 0;

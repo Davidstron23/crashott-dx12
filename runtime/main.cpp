@@ -135,6 +135,12 @@ int main(int argc, char** argv)
         if (strcmp(argv[i], "--precompile-shaders") == 0)
             return gpu::warmup::Precompile(vfs::UserDataDir() / "shadercache") ? 2 : 0;
     }
+    for (int i = 1; i < argc; i++)
+    {
+        // A value that is another option ("--renderer --game X") means --renderer came without one.
+        if (strcmp(argv[i], "--renderer") == 0)
+            gpu::renderer::SetRendererArgument(i + 1 < argc && strncmp(argv[i + 1], "--", 2) != 0 ? argv[i + 1] : nullptr);
+    }
     for (int i = 1; i + 1 < argc; i++)
     {
         if (strcmp(argv[i], "--test-shaders") == 0)
@@ -143,12 +149,6 @@ int main(int argc, char** argv)
             return settings::menu::Preview(argv[i + 1]);
         if (strcmp(argv[i], "--prompt-preview") == 0)
             return settings::prompts::Preview(argv[i + 1]);
-    }
-    for (int i = 1; i < argc; i++)
-    {
-        // A value that is another option ("--renderer --game X") means --renderer came without one.
-        if (strcmp(argv[i], "--renderer") == 0)
-            gpu::renderer::SetRendererArgument(i + 1 < argc && strncmp(argv[i + 1], "--", 2) != 0 ? argv[i + 1] : nullptr);
     }
     StartWatchdog();
 
