@@ -125,7 +125,7 @@ audio = false
 userdata_mode = "copy"
 screenshots = [300, 540]
 renderer = "d3d12"
-expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] Direct3D 12: the game.s own image is not drawn yet', '\[gpu\] Direct3D 12: shader warm-up off'] }
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] Direct3D 12: shader warm-up off'] }
 
 [profiles.renderizador_d3d12_falha_dispositivo]
 description = "CRASH_D3D12_FAIL=device: o Direct3D 12 falha de propósito e o jogo volta ao Vulkan na mesma janela"
@@ -150,7 +150,7 @@ userdata_mode = "copy"
 screenshots = [300, 540]
 renderer = "d3d12"
 env = { CRASH_D3D12_FAIL = "shaders" }
-expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'Direct3D 12 renderer on', 'neither Direct3D 12 nor Vulkan', 'shader warm-up off', 'own image is not drawn yet', 'ignored \(device'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] CRASH_D3D12_FAIL=shaders: the Direct3D 12 shaders fail on purpose', '\[gpu\] Direct3D 12: present: shader compilation failed on purpose', '\[gpu\] Direct3D 12: the presenter.s shaders did not compile or link', '\[gpu\] Direct3D 12 could not start \((\d{1,3}|[12]\d{3}|3000) ms\): falling back to Vulkan', '\[gpu\] Vulkan renderer on .+; shader cache .+'] }
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'Direct3D 12 renderer on', 'neither Direct3D 12 nor Vulkan', 'shader warm-up off', 'ignored \(device'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] CRASH_D3D12_FAIL=shaders: the Direct3D 12 shaders fail on purpose', '\[gpu\] Direct3D 12: present: shader compilation failed on purpose', '\[gpu\] Direct3D 12: the presenter.s shaders did not compile or link', '\[gpu\] Direct3D 12 could not start \((\d{1,3}|[12]\d{3}|3000) ms\): falling back to Vulkan', '\[gpu\] Vulkan renderer on .+; shader cache .+'] }
 
 [profiles.renderizador_d3d12_falha_desconhecida]
 description = "CRASH_D3D12_FAIL com um valor desconhecido só avisa no log: o Direct3D 12 liga igual"

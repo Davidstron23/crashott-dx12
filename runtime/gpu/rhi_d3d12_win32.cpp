@@ -1,11 +1,10 @@
 // Direct3D 12 backend of the rendering hardware interface (rhi.h), Windows only.
 //
-// Spec 001 skeleton: the device, one direct queue and command list, a flip-model swap chain, the
-// upload ring, clears, the read-back of the back buffer (screenshots) and the pass pipelines (the
-// present, the overlay), whose HLSL is compiled to DXIL by DXC (dxcompiler.dll, loaded at run time)
-// and signed by dxil.dll, which Direct3D 12 requires (docs/decisions/0002-dxil-signing.md).
-// What the game's own draws need (textures, depth, shaders, draw pipelines: specs 002-003) is a stub
-// that does nothing: the renderer (xenos_renderer.cpp, "presenter only") never sends it a draw.
+// The device, one direct queue and command list, a flip-model swap chain, the upload ring, clears,
+// the read-back of the back buffer (screenshots) and the pass pipelines (the present, the overlay),
+// whose HLSL is compiled to DXIL by DXC (dxcompiler.dll, loaded at run time) and signed by dxil.dll,
+// which Direct3D 12 requires (docs/decisions/0002-dxil-signing.md).
+// Spec 002 adds the game's own draws: textures (with depth and stencil), DXIL shaders, draw pipelines and Draw.
 //
 // Adapted from the backend this project had until 2026-10-23 (4cac6ecb22f7:runtime/gpu/rhi_d3d12.cpp).
 
@@ -42,6 +41,7 @@ __CRT_UUID_DECL(IDxcCompiler3, 0x228B4687, 0x5A6A, 0x4730, 0x90, 0x0C, 0x97, 0x0
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -53,11 +53,26 @@ namespace gpu::rhi
         constexpr uint32_t BACK_BUFFER_COUNT = 2;
         constexpr uint64_t UPLOAD_RING_SIZE = 256ull << 20;
         constexpr uint32_t RTV_DESCRIPTORS = 4096;
+        constexpr uint32_t DSV_DESCRIPTORS = 1024;
         constexpr uint32_t CPU_SRV_DESCRIPTORS = 32768;
         constexpr uint32_t SHADER_VISIBLE_DESCRIPTORS = 65536;
         // The last shader-visible slot is kept for the upload ring's raw SRV (vertex data of the game's draws, spec 002).
         constexpr uint32_t VERTEX_DATA_DESCRIPTOR = SHADER_VISIBLE_DESCRIPTORS - 1;
         constexpr uint32_t NO_DESCRIPTOR = UINT32_MAX;
+        constexpr D3D12_RESOURCE_STATES STATE_SHADER_RESOURCE =
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+
+        // Root parameters of the draw root signature (the binding model at the top of rhi.h).
+        enum RootParameter : uint32_t
+        {
+            ROOT_SYSTEM_CONSTANTS = 0,  // b0
+            ROOT_VS_CONSTANTS = 1,      // b1
+            ROOT_PS_CONSTANTS = 2,      // b2
+            ROOT_TEXTURES = 3,          // t0-t31
+            ROOT_VERTEX_DATA = 4,       // t0 space1: the upload ring
+            ROOT_EFFECTS = 5,           // b3: graphics option constants (graphics_options.h)
+            ROOT_PARAMETER_COUNT,
+        };
 
         // Indices of a CPU descriptor heap, with a free list (textures destroyed give theirs back).
         struct DescriptorPool
@@ -79,6 +94,11 @@ namespace gpu::rhi
                     Fatal("[gpu] out of %s descriptors", name);
                 return count++;
             }
+            void Release(uint32_t index)
+            {
+                if (index != NO_DESCRIPTOR)
+                    free.push_back(index);
+            }
             D3D12_CPU_DESCRIPTOR_HANDLE Cpu(uint32_t index) const
             {
                 D3D12_CPU_DESCRIPTOR_HANDLE handle = heap->GetCPUDescriptorHandleForHeapStart();
@@ -87,13 +107,20 @@ namespace gpu::rhi
             }
         };
 
-        // Only the swap chain's back buffers exist as textures for now.
+        // The swap chain's back buffers and the game's textures.
         class D3D12Texture : public Texture
         {
         public:
             ComPtr<ID3D12Resource> resource;
             D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
-            uint32_t rtv = NO_DESCRIPTOR;
+            uint32_t srv[3] = { NO_DESCRIPTOR, NO_DESCRIPTOR, NO_DESCRIPTOR };  // CPU SRV per View, made on first use
+            uint32_t rtv = NO_DESCRIPTOR, dsv = NO_DESCRIPTOR;
+        };
+
+        class D3D12Shader : public Shader
+        {
+        public:
+            std::vector<uint8_t> code;  // DXIL
         };
 
         // The overlay's image upload slices (an upload heap buffer, mapped for its whole life).
@@ -107,7 +134,7 @@ namespace gpu::rhi
         {
         public:
             ComPtr<ID3D12PipelineState> state;
-            ComPtr<ID3D12RootSignature> rootSignature;  // each pass has its own
+            ComPtr<ID3D12RootSignature> rootSignature;  // each pass has its own (draw pipelines use the device's)
             uint32_t textureCount = 0;
             bool bufferInput = false;
         };
@@ -158,6 +185,93 @@ float4 main(uint id : SV_VertexID) : SV_Position
             desc.MinLOD = sampler.minLod;
             desc.MaxLOD = sampler.maxLod;
             return desc;
+        }
+
+        D3D_PRIMITIVE_TOPOLOGY PrimitiveTopology(Topology topology)
+        {
+            switch (topology)
+            {
+            case Topology::PointList: return D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
+            case Topology::LineList: return D3D_PRIMITIVE_TOPOLOGY_LINELIST;
+            case Topology::LineStrip: return D3D_PRIMITIVE_TOPOLOGY_LINESTRIP;
+            case Topology::TriangleStrip: return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+            default: return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+            }
+        }
+
+        D3D12_PRIMITIVE_TOPOLOGY_TYPE TopologyType(Topology topology)
+        {
+            switch (topology)
+            {
+            case Topology::PointList: return D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+            case Topology::LineList: case Topology::LineStrip: return D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+            default: return D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            }
+        }
+
+        D3D12_BLEND BlendFactor(uint32_t factor, bool alpha)
+        {
+            switch (factor)
+            {
+            case 0: return D3D12_BLEND_ZERO;
+            case 1: return D3D12_BLEND_ONE;
+            case 4: return alpha ? D3D12_BLEND_SRC_ALPHA : D3D12_BLEND_SRC_COLOR;          // SrcColor
+            case 5: return alpha ? D3D12_BLEND_INV_SRC_ALPHA : D3D12_BLEND_INV_SRC_COLOR;  // OneMinusSrcColor
+            case 6: return D3D12_BLEND_SRC_ALPHA;
+            case 7: return D3D12_BLEND_INV_SRC_ALPHA;
+            case 8: return alpha ? D3D12_BLEND_DEST_ALPHA : D3D12_BLEND_DEST_COLOR;        // DstColor
+            case 9: return alpha ? D3D12_BLEND_INV_DEST_ALPHA : D3D12_BLEND_INV_DEST_COLOR;
+            case 10: return D3D12_BLEND_DEST_ALPHA;
+            case 11: return D3D12_BLEND_INV_DEST_ALPHA;
+            case 12: case 14: return D3D12_BLEND_BLEND_FACTOR;       // ConstantColor, ConstantAlpha
+            case 13: case 15: return D3D12_BLEND_INV_BLEND_FACTOR;   // OneMinusConstantColor, OneMinusConstantAlpha
+            case 16: return alpha ? D3D12_BLEND_ONE : D3D12_BLEND_SRC_ALPHA_SAT;
+            default: return D3D12_BLEND_ONE;
+            }
+        }
+
+        D3D12_BLEND_OP BlendOp(uint32_t op)
+        {
+            switch (op)
+            {
+            case 1: return D3D12_BLEND_OP_SUBTRACT;
+            case 2: return D3D12_BLEND_OP_MIN;
+            case 3: return D3D12_BLEND_OP_MAX;
+            case 4: return D3D12_BLEND_OP_REV_SUBTRACT;
+            default: return D3D12_BLEND_OP_ADD;
+            }
+        }
+
+        D3D12_COMPARISON_FUNC CompareFunc(uint32_t func)
+        {
+            return D3D12_COMPARISON_FUNC(D3D12_COMPARISON_FUNC_NEVER + (func & 7));
+        }
+
+        D3D12_STENCIL_OP StencilOp(uint32_t op)
+        {
+            constexpr D3D12_STENCIL_OP ops[8] = { D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_ZERO, D3D12_STENCIL_OP_REPLACE,
+                                                  D3D12_STENCIL_OP_INCR_SAT, D3D12_STENCIL_OP_DECR_SAT, D3D12_STENCIL_OP_INVERT,
+                                                  D3D12_STENCIL_OP_INCR, D3D12_STENCIL_OP_DECR };
+            return ops[op & 7];
+        }
+
+        bool IsDepthFormat(DXGI_FORMAT format)
+        {
+            return format == DXGI_FORMAT_D24_UNORM_S8_UINT || format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+        }
+
+        // The typeless format of a resource whose views differ: depth/stencil, and gamma render targets (RGBA8
+        // drawn through its sRGB view, sampled through the plain one).
+        DXGI_FORMAT ResourceFormat(const TextureDesc& desc)
+        {
+            if (desc.format == DXGI_FORMAT_D24_UNORM_S8_UINT)
+                return DXGI_FORMAT_R24G8_TYPELESS;
+            if (desc.format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT)
+                return DXGI_FORMAT_R32G8X24_TYPELESS;
+            if ((desc.usage & USAGE_RENDER_TARGET) &&
+                (desc.format == DXGI_FORMAT_R8G8B8A8_UNORM || desc.format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB))
+                return DXGI_FORMAT_R8G8B8A8_TYPELESS;
+            return desc.format;
         }
 
         // HLSL -> DXIL ------------------------------------------------------------------------------
@@ -281,26 +395,26 @@ float4 main(uint id : SV_VertexID) : SV_Position
             Upload AllocateUpload(uint64_t size, uint64_t alignment) override;
             void HoldUploads(bool hold) override { hold ? m_uploadRing.Hold() : m_uploadRing.Release(); }
 
-            // Textures of the game's draws: none yet (specs 002-003). Buffers are the overlay's.
-            Texture* CreateTexture(const TextureDesc&) override { return nullptr; }
-            void DestroyTexture(Texture*) override {}
+            // Textures of the game's draws. Buffers are the overlay's.
+            Texture* CreateTexture(const TextureDesc& desc) override;
+            void DestroyTexture(Texture* texture) override;
             Texture* NullTexture() override { return nullptr; }
             Buffer* CreateBuffer(uint64_t size) override;
             void DestroyBuffer(Buffer* buffer) override;
 
-            void CopyUploadToTexture(Texture*, uint32_t, uint64_t, uint32_t) override {}
-            void CopyTexture(Texture*, Texture*, const Rect*) override {}
+            void CopyUploadToTexture(Texture* texture, uint32_t level, uint64_t offset, uint32_t rowPitch) override;
+            void CopyTexture(Texture*, Texture*, const Rect*) override {}  // spec 002, T3 (today only the temporal upscaler asks for it)
             void ClearColor(Texture* texture, const float color[4], const Rect* rect) override;
-            void ClearDepthStencil(Texture*, float, uint8_t, const Rect*) override {}
+            void ClearDepthStencil(Texture* texture, float depth, uint8_t stencil, const Rect* rect) override;
 
-            Shader* CreateShader(Stage, const std::string&, const char*, Layout) override { return nullptr; }
-            Pipeline* GetDrawPipeline(const DrawPipelineKey&, bool, bool*) override { return nullptr; }
+            Shader* CreateShader(Stage stage, const std::string& hlsl, const char* name, Layout layout) override;
+            Pipeline* GetDrawPipeline(const DrawPipelineKey& key, bool deferrable, bool* deferred) override;
             void PrecompileProgress(uint32_t& done, uint32_t& total) override { done = total = 0; }
             void SetShaderCompilation(ShaderCompilation) override {}
             void PrewarmShader(Stage, const std::string&) override {}
             Pipeline* CreatePassPipeline(const PassPipelineDesc& desc) override;
 
-            void Draw(const DrawCall&) override {}
+            void Draw(const DrawCall& draw) override;
             void DrawPass(const PassDraw& pass) override;
 
             DXGI_FORMAT BackBufferFormat() const override { return DXGI_FORMAT_R8G8B8A8_UNORM; }
@@ -348,6 +462,11 @@ float4 main(uint id : SV_VertexID) : SV_Position
             void Transition(D3D12Texture* texture, D3D12_RESOURCE_STATES state);
             void BindDescriptorHeaps();
             void CreateBackBuffers();
+            bool CreateDrawRootSignature();
+            uint32_t ViewSrv(D3D12Texture* texture, View view);
+            D3D12_CPU_DESCRIPTOR_HANDLE Rtv(D3D12Texture* texture);
+            D3D12_CPU_DESCRIPTOR_HANDLE Dsv(D3D12Texture* texture);
+            void ReleaseDescriptors(D3D12Texture* texture);
 
             std::string m_adapterName;
             std::filesystem::path m_shaderCache;
@@ -369,10 +488,11 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
             // Descriptors: RTVs, the CPU-only SRVs (just the null one for now) and the shader-visible heap, where
             // every pass copies the views it samples (a ring over all of it but the last slot).
-            DescriptorPool m_rtvs, m_cpuSrvs;
+            DescriptorPool m_rtvs, m_dsvs, m_cpuSrvs;
             ComPtr<ID3D12DescriptorHeap> m_gpuSrvHeap;
             uint32_t m_srvSize = 0;
             uint32_t m_nullTextureSrv = 0;
+            D3D12_CPU_DESCRIPTOR_HANDLE m_nullRtv{};  // a draw's missing render target
             Ring m_descriptorRing;
 
             // Upload ring (one upload heap buffer, mapped for its whole life).
@@ -380,6 +500,11 @@ float4 main(uint id : SV_VertexID) : SV_Position
             uint8_t* m_uploadCpu = nullptr;
             D3D12_GPU_VIRTUAL_ADDRESS m_uploadGpu = 0;
             Ring m_uploadRing;
+
+            // The game's shaders and draw pipelines (a null state = that draw is skipped), kept for the device's life.
+            std::vector<std::unique_ptr<D3D12Shader>> m_shaders;
+            ComPtr<ID3D12RootSignature> m_drawRootSignature;
+            std::unordered_map<uint64_t, std::unique_ptr<D3D12Pipeline>> m_drawPipelines;
 
             // The presenter's pipelines, kept for the device's life.
             std::vector<std::unique_ptr<D3D12Pipeline>> m_passPipelines;
@@ -391,13 +516,14 @@ float4 main(uint id : SV_VertexID) : SV_Position
             {
                 uint64_t fence;
                 std::unique_ptr<D3D12Buffer> buffer;
+                ComPtr<ID3D12Resource> resource;  // a destroyed texture's
             };
             std::deque<Garbage> m_garbage;
 
             Timing m_timing;
             struct
             {
-                uint64_t submits = 0, passPipelines = 0, dxilCompiles = 0, dxilFailures = 0;
+                uint64_t submits = 0, passPipelines = 0, drawPipelines = 0, dxilCompiles = 0, dxilFailures = 0;
             } m_stats;
         };
 
@@ -551,7 +677,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             auto* d3dTexture = static_cast<D3D12Texture*>(texture);
             Transition(d3dTexture, D3D12_RESOURCE_STATE_RENDER_TARGET);
             D3D12_RECT d3dRect = rect ? D3D12_RECT{ rect->left, rect->top, rect->right, rect->bottom } : D3D12_RECT{};
-            m_list->ClearRenderTargetView(m_rtvs.Cpu(d3dTexture->rtv), color, rect ? 1 : 0, rect ? &d3dRect : nullptr);
+            m_list->ClearRenderTargetView(Rtv(d3dTexture), color, rect ? 1 : 0, rect ? &d3dRect : nullptr);
         }
 
         // Buffers and passes ----------------------------------------------------------------------
@@ -588,6 +714,431 @@ float4 main(uint id : SV_VertexID) : SV_Position
             Garbage garbage{ m_fenceValue + 1 };
             garbage.buffer.reset(static_cast<D3D12Buffer*>(buffer));
             m_garbage.push_back(std::move(garbage));
+        }
+
+        // Textures --------------------------------------------------------------------------------
+
+        Texture* D3D12Device::CreateTexture(const TextureDesc& desc)
+        {
+            auto texture = std::make_unique<D3D12Texture>();
+            texture->desc = desc;
+            D3D12_RESOURCE_DESC resourceDesc{};
+            resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            resourceDesc.Width = desc.width;
+            resourceDesc.Height = desc.height;
+            resourceDesc.DepthOrArraySize = 1;
+            resourceDesc.MipLevels = UINT16(desc.levels);
+            resourceDesc.Format = ResourceFormat(desc);
+            resourceDesc.SampleDesc.Count = 1;
+            D3D12_HEAP_PROPERTIES heap{ D3D12_HEAP_TYPE_DEFAULT };
+            D3D12_CLEAR_VALUE clear{};
+            bool hasClear = false;
+            if (desc.usage & USAGE_DEPTH_STENCIL)
+            {
+                resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+                clear.Format = desc.format;
+                clear.DepthStencil.Depth = 1.0f;
+                hasClear = true;
+                texture->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+            }
+            else if (desc.usage & USAGE_RENDER_TARGET)
+            {
+                resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+                clear.Format = desc.RenderFormat();
+                hasClear = true;
+                texture->state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            }
+            else
+            {
+                texture->state = D3D12_RESOURCE_STATE_COPY_DEST;
+            }
+            if (FAILED(m_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &resourceDesc, texture->state, hasClear ? &clear : nullptr,
+                                                         IID_PPV_ARGS(&texture->resource))))
+            {
+                Log("[gpu] could not create a %ux%u texture (%s, DXGI %u)", desc.width, desc.height, desc.name, uint32_t(desc.format));
+                return nullptr;
+            }
+            if (desc.usage & USAGE_DEPTH_STENCIL)
+            {
+                m_list->ClearDepthStencilView(Dsv(texture.get()), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
+            }
+            else if (desc.usage & USAGE_RENDER_TARGET)
+            {
+                const float zero[4] = {};  // the contract of CreateTexture: render targets start cleared
+                m_list->ClearRenderTargetView(Rtv(texture.get()), zero, 0, nullptr);
+            }
+            return texture.release();
+        }
+
+        void D3D12Device::ReleaseDescriptors(D3D12Texture* texture)
+        {
+            for (uint32_t& srv : texture->srv)
+            {
+                m_cpuSrvs.Release(srv);
+                srv = NO_DESCRIPTOR;
+            }
+            m_rtvs.Release(texture->rtv);
+            m_dsvs.Release(texture->dsv);
+            texture->rtv = texture->dsv = NO_DESCRIPTOR;
+        }
+
+        void D3D12Device::DestroyTexture(Texture* texture)
+        {
+            if (!texture)
+                return;
+            auto* d3dTexture = static_cast<D3D12Texture*>(texture);
+            // The CPU descriptors are copied when a draw is recorded, so they can be reused now; the resource waits for the GPU.
+            ReleaseDescriptors(d3dTexture);
+            Garbage garbage{ m_fenceValue + 1 };
+            garbage.resource = std::move(d3dTexture->resource);
+            delete d3dTexture;
+            m_garbage.push_back(std::move(garbage));
+        }
+
+        uint32_t D3D12Device::ViewSrv(D3D12Texture* texture, View view)
+        {
+            if (!texture)
+                return m_nullTextureSrv;
+            uint32_t& index = texture->srv[uint32_t(view)];
+            if (index != NO_DESCRIPTOR)
+                return index;
+            index = m_cpuSrvs.Allocate();
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Texture2D.MipLevels = texture->desc.levels;
+            bool isFloat = texture->desc.format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+            switch (view)
+            {
+            case View::Depth:
+                srv.Format = isFloat ? DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS : DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+                break;
+            case View::Stencil:
+                srv.Format = isFloat ? DXGI_FORMAT_X32_TYPELESS_G8X24_UINT : DXGI_FORMAT_X24_TYPELESS_G8_UINT;
+                srv.Texture2D.PlaneSlice = 1;
+                break;
+            default:
+                srv.Format = IsDepthFormat(texture->desc.format) ? (isFloat ? DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS : DXGI_FORMAT_R24_UNORM_X8_TYPELESS)
+                                                                  : texture->desc.format;
+                if (srv.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB && ResourceFormat(texture->desc) == DXGI_FORMAT_R8G8B8A8_TYPELESS)
+                    srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                break;
+            }
+            m_device->CreateShaderResourceView(texture->resource.Get(), &srv, m_cpuSrvs.Cpu(index));
+            return index;
+        }
+
+        D3D12_CPU_DESCRIPTOR_HANDLE D3D12Device::Rtv(D3D12Texture* texture)
+        {
+            if (texture->rtv == NO_DESCRIPTOR)
+            {
+                texture->rtv = m_rtvs.Allocate();
+                D3D12_RENDER_TARGET_VIEW_DESC rtv{};
+                rtv.Format = texture->desc.RenderFormat();
+                rtv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+                m_device->CreateRenderTargetView(texture->resource.Get(), &rtv, m_rtvs.Cpu(texture->rtv));
+            }
+            return m_rtvs.Cpu(texture->rtv);
+        }
+
+        D3D12_CPU_DESCRIPTOR_HANDLE D3D12Device::Dsv(D3D12Texture* texture)
+        {
+            if (texture->dsv == NO_DESCRIPTOR)
+            {
+                texture->dsv = m_dsvs.Allocate();
+                D3D12_DEPTH_STENCIL_VIEW_DESC dsv{};
+                dsv.Format = texture->desc.format;
+                dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+                m_device->CreateDepthStencilView(texture->resource.Get(), &dsv, m_dsvs.Cpu(texture->dsv));
+            }
+            return m_dsvs.Cpu(texture->dsv);
+        }
+
+        void D3D12Device::ClearDepthStencil(Texture* texture, float depth, uint8_t stencil, const Rect* rect)
+        {
+            auto* d3dTexture = static_cast<D3D12Texture*>(texture);
+            Transition(d3dTexture, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+            D3D12_RECT d3dRect = rect ? D3D12_RECT{ rect->left, rect->top, rect->right, rect->bottom } : D3D12_RECT{};
+            m_list->ClearDepthStencilView(Dsv(d3dTexture), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, depth, stencil, rect ? 1 : 0,
+                                          rect ? &d3dRect : nullptr);
+        }
+
+        void D3D12Device::CopyUploadToTexture(Texture* texture, uint32_t level, uint64_t offset, uint32_t rowPitch)
+        {
+            auto* d3dTexture = static_cast<D3D12Texture*>(texture);
+            Transition(d3dTexture, D3D12_RESOURCE_STATE_COPY_DEST);
+            D3D12_RESOURCE_DESC desc = d3dTexture->resource->GetDesc();
+            D3D12_TEXTURE_COPY_LOCATION source{};
+            source.pResource = m_uploadBuffer.Get();
+            source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            // rhi.h's Footprint follows D3D12's rules: only the offset and the pitch of the renderer's layout are patched in.
+            m_device->GetCopyableFootprints(&desc, level, 1, 0, &source.PlacedFootprint, nullptr, nullptr, nullptr);
+            source.PlacedFootprint.Offset = offset;
+            source.PlacedFootprint.Footprint.RowPitch = rowPitch;
+            D3D12_TEXTURE_COPY_LOCATION destination{};
+            destination.pResource = d3dTexture->resource.Get();
+            destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            destination.SubresourceIndex = level;
+            m_list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+        }
+
+        // Shaders, draw pipelines and draws ---------------------------------------------------------
+
+        // shortcut: no disk cache (every start compiles the shaders it uses), spec 002 T2 adds it. The recording thread is the
+        // only caller (the warm-up is off with Direct3D 12), so m_shaders needs no lock.
+        Shader* D3D12Device::CreateShader(Stage stage, const std::string& hlsl, const char* name, Layout)
+        {
+            auto shader = std::make_unique<D3D12Shader>();
+            if (!CompileDxil(stage, hlsl, name, m_shaderCache, shader->code, &m_stats.dxilCompiles, &m_stats.dxilFailures))
+                return nullptr;
+            m_shaders.push_back(std::move(shader));
+            return m_shaders.back().get();
+        }
+
+        // The binding model of rhi.h for the game's draws: b0-b2 as root CBVs, b3 as root constants, t0-t31 as a table, the
+        // upload ring (vertex data) as t0 space1. shortcut: one static linear-clamp sampler on every s0-s31, until spec 002 T3 sends
+        // the game's samplers.
+        bool D3D12Device::CreateDrawRootSignature()
+        {
+            D3D12_DESCRIPTOR_RANGE textureRange{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 32, 0, 0, 0 };
+            D3D12_DESCRIPTOR_RANGE vertexRange{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 1, 0 };
+            D3D12_ROOT_PARAMETER parameters[ROOT_PARAMETER_COUNT]{};
+            parameters[ROOT_SYSTEM_CONSTANTS].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+            parameters[ROOT_SYSTEM_CONSTANTS].Descriptor = { 0, 0 };
+            parameters[ROOT_SYSTEM_CONSTANTS].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            parameters[ROOT_VS_CONSTANTS].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+            parameters[ROOT_VS_CONSTANTS].Descriptor = { 1, 0 };
+            parameters[ROOT_VS_CONSTANTS].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+            parameters[ROOT_PS_CONSTANTS].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+            parameters[ROOT_PS_CONSTANTS].Descriptor = { 2, 0 };
+            parameters[ROOT_PS_CONSTANTS].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+            parameters[ROOT_TEXTURES].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            parameters[ROOT_TEXTURES].DescriptorTable = { 1, &textureRange };
+            parameters[ROOT_TEXTURES].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            parameters[ROOT_VERTEX_DATA].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            parameters[ROOT_VERTEX_DATA].DescriptorTable = { 1, &vertexRange };
+            parameters[ROOT_VERTEX_DATA].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+            parameters[ROOT_EFFECTS].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+            parameters[ROOT_EFFECTS].Constants = { 3, 0, graphics::EFFECT_CONSTANT_DWORDS };
+            parameters[ROOT_EFFECTS].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            D3D12_STATIC_SAMPLER_DESC samplers[32]{};
+            for (uint32_t i = 0; i < 32; i++)
+            {
+                samplers[i].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+                samplers[i].AddressU = samplers[i].AddressV = samplers[i].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+                samplers[i].MaxAnisotropy = 1;
+                samplers[i].ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+                samplers[i].MaxLOD = D3D12_FLOAT32_MAX;
+                samplers[i].ShaderRegister = i;
+                samplers[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            }
+            D3D12_ROOT_SIGNATURE_DESC desc{ ROOT_PARAMETER_COUNT, parameters, 32, samplers, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+            ComPtr<ID3DBlob> blob, errors;
+            if (FAILED(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &errors)))
+            {
+                Log("[gpu] Direct3D 12: root signature: %s", errors ? static_cast<const char*>(errors->GetBufferPointer()) : "?");
+                return false;
+            }
+            return SUCCEEDED(m_device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&m_drawRootSignature)));
+        }
+
+        // The part of a DrawPipelineKey that goes into a Direct3D 12 PSO, so keys that differ only in what the PSO ignores
+        // (slots past colorCount, depth state without a depth target, the exact topology of one topology type, the shader
+        // hashes next to the shader pointers) share one PSO. Bias and stencil masks are PSO state in Direct3D 12.
+        uint64_t PsoHash(const DrawPipelineKey& key)
+        {
+            struct
+            {
+                Shader* vs;
+                Shader* ps;
+                Shader* gs;
+                uint32_t colorFormats[4];
+                uint32_t blend[4];
+                uint32_t colorMask;
+                uint32_t colorCount;
+                uint32_t depthFormat;
+                uint32_t depthControl;
+                uint32_t stencilMasks;
+                int32_t depthBias;
+                float slopeBias;
+                uint8_t cull, topologyType, depthClip, stripCut;
+            } pso;
+            memset(&pso, 0, sizeof(pso));  // padding included: the struct is hashed as bytes
+            pso.vs = key.vs;
+            pso.ps = key.ps;
+            pso.gs = key.gs;
+            pso.colorCount = std::min(key.colorCount, 4u);
+            for (uint32_t i = 0; i < pso.colorCount; i++)
+            {
+                pso.colorFormats[i] = key.colorFormats[i];
+                pso.blend[i] = key.blend[i];
+            }
+            pso.colorMask = key.colorMask & ((1ull << (4 * pso.colorCount)) - 1);
+            pso.depthFormat = key.depthFormat;
+            if (key.depthFormat)
+            {
+                pso.depthControl = key.depthControl;
+                pso.stencilMasks = key.stencilMasks & 0xFFFF00;
+            }
+            pso.depthBias = key.depthBias;
+            pso.slopeBias = key.slopeBias;
+            pso.cull = uint8_t(key.cull);
+            pso.topologyType = uint8_t(TopologyType(key.topology));
+            pso.depthClip = key.depthClip;
+            pso.stripCut = key.stripCut;
+            return HashBytes(&pso, sizeof(pso));
+        }
+
+        // Blend, depth and stencil follow RB_BLENDCONTROL and RB_DEPTHCONTROL; the filter for what is not translated
+        // (RF-6) arrives with T3.
+        Pipeline* D3D12Device::GetDrawPipeline(const DrawPipelineKey& key, bool, bool*)
+        {
+            uint64_t hash = PsoHash(key);
+            auto cached = m_drawPipelines.find(hash);
+            if (cached != m_drawPipelines.end())
+                return cached->second->state ? cached->second.get() : nullptr;
+
+            auto pipeline = std::make_unique<D3D12Pipeline>();
+            if (key.vs)
+            {
+                D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
+                desc.pRootSignature = m_drawRootSignature.Get();
+                auto bytecode = [](Shader* shader) {
+                    const auto& code = static_cast<D3D12Shader*>(shader)->code;
+                    return D3D12_SHADER_BYTECODE{ code.data(), code.size() };
+                };
+                desc.VS = bytecode(key.vs);
+                if (key.ps)
+                    desc.PS = bytecode(key.ps);
+                if (key.gs)
+                    desc.GS = bytecode(key.gs);
+                desc.BlendState.IndependentBlendEnable = TRUE;
+                for (uint32_t i = 0; i < 4; i++)
+                {
+                    // RB_BLENDCONTROL: color src/op/dst in the low half, alpha in the high half; ONE, ADD, ZERO is no blending.
+                    auto& rt = desc.BlendState.RenderTarget[i];
+                    uint32_t blend = key.blend[i];
+                    uint32_t colorSrc = blend & 0x1F, colorOp = (blend >> 5) & 7, colorDst = (blend >> 8) & 0x1F;
+                    uint32_t alphaSrc = (blend >> 16) & 0x1F, alphaOp = (blend >> 21) & 7, alphaDst = (blend >> 24) & 0x1F;
+                    rt.BlendEnable = !(colorSrc == 1 && colorDst == 0 && colorOp == 0 && alphaSrc == 1 && alphaDst == 0 && alphaOp == 0);
+                    rt.SrcBlend = BlendFactor(colorSrc, false);
+                    rt.DestBlend = BlendFactor(colorDst, false);
+                    rt.BlendOp = BlendOp(colorOp);
+                    rt.SrcBlendAlpha = BlendFactor(alphaSrc, true);
+                    rt.DestBlendAlpha = BlendFactor(alphaDst, true);
+                    rt.BlendOpAlpha = BlendOp(alphaOp);
+                    rt.RenderTargetWriteMask = UINT8((key.colorMask >> (4 * i)) & 0xF);
+                }
+                desc.SampleMask = UINT_MAX;
+                desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+                desc.RasterizerState.CullMode = key.cull == Cull::Front ? D3D12_CULL_MODE_FRONT : key.cull == Cull::Back ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
+                desc.RasterizerState.DepthBias = key.depthBias;
+                desc.RasterizerState.SlopeScaledDepthBias = key.slopeBias;
+                desc.RasterizerState.DepthClipEnable = key.depthClip;
+                uint32_t depthControl = key.depthControl;
+                if (key.depthFormat)
+                {
+                    desc.DepthStencilState.DepthEnable = (depthControl >> 1) & 1;
+                    desc.DepthStencilState.DepthWriteMask = ((depthControl >> 2) & 1) ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+                    desc.DepthStencilState.DepthFunc = CompareFunc((depthControl >> 4) & 7);
+                    desc.DepthStencilState.StencilEnable = depthControl & 1;
+                    desc.DepthStencilState.StencilReadMask = UINT8((key.stencilMasks >> 8) & 0xFF);
+                    desc.DepthStencilState.StencilWriteMask = UINT8((key.stencilMasks >> 16) & 0xFF);
+                    desc.DepthStencilState.FrontFace.StencilFunc = CompareFunc((depthControl >> 8) & 7);
+                    desc.DepthStencilState.FrontFace.StencilFailOp = StencilOp(depthControl >> 11);
+                    desc.DepthStencilState.FrontFace.StencilPassOp = StencilOp(depthControl >> 14);
+                    desc.DepthStencilState.FrontFace.StencilDepthFailOp = StencilOp(depthControl >> 17);
+                    if ((depthControl >> 7) & 1)  // separate back-face stencil
+                    {
+                        desc.DepthStencilState.BackFace.StencilFunc = CompareFunc((depthControl >> 20) & 7);
+                        desc.DepthStencilState.BackFace.StencilFailOp = StencilOp(depthControl >> 23);
+                        desc.DepthStencilState.BackFace.StencilPassOp = StencilOp(depthControl >> 26);
+                        desc.DepthStencilState.BackFace.StencilDepthFailOp = StencilOp(depthControl >> 29);
+                    }
+                    else
+                    {
+                        desc.DepthStencilState.BackFace = desc.DepthStencilState.FrontFace;
+                    }
+                    desc.DSVFormat = DXGI_FORMAT(key.depthFormat);
+                }
+                desc.IBStripCutValue = key.stripCut ? D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF : D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
+                desc.PrimitiveTopologyType = TopologyType(key.topology);
+                desc.NumRenderTargets = key.colorCount;
+                for (uint32_t i = 0; i < key.colorCount; i++)
+                    desc.RTVFormats[i] = DXGI_FORMAT(key.colorFormats[i]);
+                desc.SampleDesc.Count = 1;
+                HRESULT result = m_device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline->state));
+                if (FAILED(result))
+                    Log("[gpu] Direct3D 12: CreateGraphicsPipelineState failed (0x%08X) for vs %016llx ps %016llx", unsigned(result),
+                        (unsigned long long)key.vsHash, (unsigned long long)key.psHash);
+                else
+                    m_stats.drawPipelines++;
+            }
+            Pipeline* out = pipeline->state ? pipeline.get() : nullptr;
+            m_drawPipelines[hash] = std::move(pipeline);
+            return out;
+        }
+
+        // shortcut: every piece of state is recorded on every draw (no change tracking), which is slower in the 3D scenes (~1,600
+        // draws per frame); a later spec can add it back.
+        void D3D12Device::Draw(const DrawCall& draw)
+        {
+            // Textures: their state first (a barrier needs no descriptor), then one table of 32 with only the used slots written.
+            uint32_t srvs[32];
+            uint32_t textureCount = std::min(draw.textureCount, 32u);
+            for (uint32_t i = 0; i < textureCount; i++)
+            {
+                auto* texture = static_cast<D3D12Texture*>(draw.textures[i].texture);
+                if (texture)
+                    Transition(texture, STATE_SHADER_RESOURCE);
+                srvs[i] = ViewSrv(texture, draw.textures[i].view);
+            }
+            uint32_t descriptors = AllocateDescriptors(32);
+            for (uint32_t i = 0; i < textureCount; i++)
+                m_device->CopyDescriptorsSimple(1, GpuHeapCpu(descriptors + i), m_cpuSrvs.Cpu(srvs[i]), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+            D3D12_CPU_DESCRIPTOR_HANDLE rtvs[4];
+            for (uint32_t i = 0; i < draw.colorCount; i++)
+            {
+                if (auto* target = static_cast<D3D12Texture*>(draw.colorTargets[i]))
+                {
+                    Transition(target, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                    rtvs[i] = Rtv(target);
+                }
+                else
+                {
+                    rtvs[i] = m_nullRtv;
+                }
+            }
+
+            auto* depthTarget = static_cast<D3D12Texture*>(draw.depthTarget);
+            D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
+            if (depthTarget)
+            {
+                Transition(depthTarget, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+                dsv = Dsv(depthTarget);
+            }
+
+            BindDescriptorHeaps();
+            m_list->SetGraphicsRootSignature(m_drawRootSignature.Get());
+            D3D12_INDEX_BUFFER_VIEW indices{ m_uploadGpu, uint32_t(UPLOAD_RING_SIZE), DXGI_FORMAT_R32_UINT };
+            m_list->IASetIndexBuffer(&indices);  // the whole upload ring; a draw starts at its own indices
+            m_list->SetGraphicsRootConstantBufferView(ROOT_SYSTEM_CONSTANTS, m_uploadGpu + draw.systemConstants);
+            m_list->SetGraphicsRootConstantBufferView(ROOT_VS_CONSTANTS, m_uploadGpu + draw.vertexConstants);
+            m_list->SetGraphicsRootConstantBufferView(ROOT_PS_CONSTANTS, m_uploadGpu + draw.pixelConstants);
+            m_list->SetGraphicsRootDescriptorTable(ROOT_TEXTURES, GpuHeapGpu(descriptors));
+            m_list->SetGraphicsRootDescriptorTable(ROOT_VERTEX_DATA, GpuHeapGpu(VERTEX_DATA_DESCRIPTOR));
+            m_list->SetGraphicsRoot32BitConstants(ROOT_EFFECTS, graphics::EFFECT_CONSTANT_DWORDS, &draw.effects, 0);
+            m_list->SetPipelineState(static_cast<D3D12Pipeline*>(draw.pipeline)->state.Get());
+            m_list->OMSetRenderTargets(draw.colorCount, draw.colorCount ? rtvs : nullptr, FALSE, depthTarget ? &dsv : nullptr);
+            m_list->OMSetStencilRef(draw.stencilRef);
+            m_list->OMSetBlendFactor(draw.blendFactor);
+            D3D12_VIEWPORT viewport{ draw.viewport.x, draw.viewport.y, draw.viewport.width, draw.viewport.height, draw.viewport.minDepth, draw.viewport.maxDepth };
+            D3D12_RECT scissor{ draw.scissor.left, draw.scissor.top, draw.scissor.right, draw.scissor.bottom };
+            m_list->RSSetViewports(1, &viewport);
+            m_list->RSSetScissorRects(1, &scissor);
+            m_list->IASetPrimitiveTopology(PrimitiveTopology(draw.topology));
+            m_list->DrawIndexedInstanced(draw.indexCount, 1, draw.firstIndex, 0, 0);
         }
 
         Pipeline* D3D12Device::CreatePassPipeline(const PassPipelineDesc& desc)
@@ -695,15 +1246,22 @@ float4 main(uint id : SV_VertexID) : SV_Position
             auto* pipeline = static_cast<D3D12Pipeline*>(pass.pipeline);
             if (!pipeline)
                 return;
-            // No texture exists yet (specs 002-003): a pass samples the null texture (transparent black).
+            // The textures it samples (a slot without one samples the null texture, transparent black).
             uint32_t descriptors = 0;
             if (!pipeline->bufferInput)
             {
                 uint32_t count = std::max(pipeline->textureCount, 1u);
+                uint32_t srvs[8];
+                for (uint32_t i = 0; i < count && i < 8; i++)
+                {
+                    auto* texture = i < pass.textureCount ? static_cast<D3D12Texture*>(pass.textures[i].texture) : nullptr;
+                    if (texture)
+                        Transition(texture, STATE_SHADER_RESOURCE);
+                    srvs[i] = ViewSrv(texture, i < pass.textureCount ? pass.textures[i].view : View::Default);
+                }
                 descriptors = AllocateDescriptors(count);
                 for (uint32_t i = 0; i < count; i++)
-                    m_device->CopyDescriptorsSimple(1, GpuHeapCpu(descriptors + i), m_cpuSrvs.Cpu(m_nullTextureSrv),
-                                                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                    m_device->CopyDescriptorsSimple(1, GpuHeapCpu(descriptors + i), m_cpuSrvs.Cpu(srvs[i]), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
             }
             D3D12_GPU_VIRTUAL_ADDRESS constants = m_uploadGpu;
             if (pass.constantBytes)
@@ -719,7 +1277,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             {
                 auto* target = static_cast<D3D12Texture*>(pass.targets[i]);
                 Transition(target, D3D12_RESOURCE_STATE_RENDER_TARGET);
-                rtvs[i] = m_rtvs.Cpu(target->rtv);
+                rtvs[i] = Rtv(target);
             }
             BindDescriptorHeaps();
             m_list->SetGraphicsRootSignature(pipeline->rootSignature.Get());
@@ -856,8 +1414,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         void D3D12Device::LogStats()
         {
-            Log("[gpu] d3d12: %llu submits, %llu pass pipelines, %llu DXIL compiles (%llu failed)", (unsigned long long)m_stats.submits,
-                (unsigned long long)m_stats.passPipelines, (unsigned long long)m_stats.dxilCompiles, (unsigned long long)m_stats.dxilFailures);
+            Log("[gpu] d3d12: %llu submits, %llu pass pipelines, %llu draw pipelines, %llu DXIL compiles (%llu failed)", (unsigned long long)m_stats.submits,
+                (unsigned long long)m_stats.passPipelines, (unsigned long long)m_stats.drawPipelines, (unsigned long long)m_stats.dxilCompiles,
+                (unsigned long long)m_stats.dxilFailures);
         }
 
         // Startup ---------------------------------------------------------------------------------
@@ -915,6 +1474,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 return SUCCEEDED(m_device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&heap)));
             };
             if (!makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, RTV_DESCRIPTORS, false, m_rtvs.heap) ||
+                !makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, DSV_DESCRIPTORS, false, m_dsvs.heap) ||
                 !makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, CPU_SRV_DESCRIPTORS, false, m_cpuSrvs.heap) ||
                 !makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, SHADER_VISIBLE_DESCRIPTORS, true, m_gpuSrvHeap))
             {
@@ -925,6 +1485,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
             m_rtvs.size = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
             m_rtvs.capacity = RTV_DESCRIPTORS;
             m_rtvs.name = "RTV";
+            m_dsvs.size = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+            m_dsvs.capacity = DSV_DESCRIPTORS;
+            m_dsvs.name = "DSV";
             m_cpuSrvs.size = m_srvSize;
             m_cpuSrvs.capacity = CPU_SRV_DESCRIPTORS;
             m_cpuSrvs.name = "CPU SRV";
@@ -938,6 +1501,11 @@ float4 main(uint id : SV_VertexID) : SV_Position
             nullTexture.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             nullTexture.Texture2D.MipLevels = 1;
             m_device->CreateShaderResourceView(nullptr, &nullTexture, m_cpuSrvs.Cpu(m_nullTextureSrv));
+            m_nullRtv = m_rtvs.Cpu(m_rtvs.Allocate());
+            D3D12_RENDER_TARGET_VIEW_DESC nullRtv{};
+            nullRtv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            nullRtv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+            m_device->CreateRenderTargetView(nullptr, &nullRtv, m_nullRtv);
 
             // Upload ring.
             D3D12_RESOURCE_DESC bufferDesc{};
@@ -959,6 +1527,20 @@ float4 main(uint id : SV_VertexID) : SV_Position
             }
             m_uploadGpu = m_uploadBuffer->GetGPUVirtualAddress();
             m_uploadRing.Init(UPLOAD_RING_SIZE);
+            // One raw SRV over the whole upload ring in the last shader-visible slot (the descriptor ring stops before it): a
+            // draw finds its vertex data by the offsets in the system constants, with no view made per draw.
+            D3D12_SHADER_RESOURCE_VIEW_DESC vertexData{};
+            vertexData.Format = DXGI_FORMAT_R32_TYPELESS;
+            vertexData.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+            vertexData.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            vertexData.Buffer.NumElements = uint32_t(UPLOAD_RING_SIZE / 4);
+            vertexData.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+            m_device->CreateShaderResourceView(m_uploadBuffer.Get(), &vertexData, GpuHeapCpu(VERTEX_DATA_DESCRIPTOR));
+            if (!CreateDrawRootSignature())
+            {
+                Log("[gpu] Direct3D 12: could not create the draw root signature");
+                return false;
+            }
 
             // The full-screen vertex shader: if even that does not compile, nothing can be shown (the start fails).
             if (!CompileDxil(Stage::Vertex, FULLSCREEN_VS, "blit_vs", m_shaderCache, m_fullscreenVs, &m_stats.dxilCompiles, &m_stats.dxilFailures))
