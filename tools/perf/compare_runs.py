@@ -10,9 +10,10 @@ Tolerance mode (spec 002, P3) judges a candidate run against two runs of the bas
 
     python tools\perf\compare_runs.py --tolerance <base_1> <base_2> <candidate> [--floor 0.1] [--diff out_dir]
 
-noise = the largest "% of pixels > 8" between base_1 and base_2; the candidate passes when every capture
-differs from base_1 by at most max(2 * noise, floor) % of pixels, with the same number of captures at the
-same sizes. Only the captures anchored to events (SHOT) are judged; the ones taken at frame numbers
+For each anchored capture i, noise_i = "% of pixels > 8" between base_1 and base_2; the candidate passes
+when every capture differs from base_1 by at most max(2 * noise_i, floor) % of pixels (its own threshold,
+so one animated capture does not loosen the others), with the same number of captures at the same sizes.
+Only the captures anchored to events (SHOT) are judged; the ones taken at frame numbers
 (`screenshots = [N]` in the profile, read from the run's settings.json) go to an "eyeball" list.
 Exit code 0 = pass, 1 = fail.
 """
@@ -80,14 +81,14 @@ def tolerance(base_1, base_2, candidate, floor, diff_folder):
         if diff_folder:
             amplified = np.clip(np.abs(image_a - image_c) * 4, 0, 255).astype(np.uint8)
             Image.fromarray(amplified).save(Path(diff_folder) / f"diff_{a.stem}_{c.stem}.png")
-    threshold = max(2.0 * max(noises), floor)
-    print(f"noise (base_1 vs base_2, largest): {max(noises):.3f}%  ->  threshold max(2 x noise, {floor}%) = {threshold:.3f}%")
+    print(f"threshold per capture = max(2 x its noise (base_1 vs base_2), {floor}%)")
     for a, c, noise, share in zip(anchored_1, anchored_c, noises, shares):
         if share is None:
             continue
+        threshold = max(2.0 * noise, floor)
         good = share <= threshold
         ok = ok and good
-        print(f"  {'ok  ' if good else 'FAIL'} {a.name} vs {c.name}: {share:.3f}% pixels > 8 (this pair's noise {noise:.3f}%)")
+        print(f"  {'ok  ' if good else 'FAIL'} {a.name} vs {c.name}: {share:.3f}% pixels > 8 (noise {noise:.3f}%, threshold {threshold:.3f}%)")
     if eyeball_c:
         print("eyeball (frame-number captures, not judged): " + ", ".join(str(shot) for shot in eyeball_c))
     print("PASS" if ok else "FAIL")
