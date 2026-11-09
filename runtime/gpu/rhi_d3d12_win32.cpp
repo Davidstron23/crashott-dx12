@@ -44,6 +44,7 @@ __CRT_UUID_DECL(IDxcVersionInfo2, 0xFB6904C4, 0x42F0, 0x4B62, 0x9C, 0x46, 0x98, 
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -58,6 +59,7 @@ namespace gpu::rhi
         constexpr uint32_t DSV_DESCRIPTORS = 1024;
         constexpr uint32_t CPU_SRV_DESCRIPTORS = 32768;
         constexpr uint32_t SHADER_VISIBLE_DESCRIPTORS = 65536;
+        constexpr uint32_t SAMPLER_DESCRIPTORS = 2048;  // blocks of 32, cached by the samplers a draw uses
         // The last shader-visible slot is kept for the upload ring's raw SRV (vertex data of the game's draws, spec 002).
         constexpr uint32_t VERTEX_DATA_DESCRIPTOR = SHADER_VISIBLE_DESCRIPTORS - 1;
         constexpr uint32_t NO_DESCRIPTOR = UINT32_MAX;
@@ -73,6 +75,7 @@ namespace gpu::rhi
             ROOT_TEXTURES = 3,          // t0-t31
             ROOT_VERTEX_DATA = 4,       // t0 space1: the upload ring
             ROOT_EFFECTS = 5,           // b3: graphics option constants (graphics_options.h)
+            ROOT_SAMPLERS = 6,          // s0-s31
             ROOT_PARAMETER_COUNT,
         };
 
@@ -225,12 +228,17 @@ float4 main(uint id : SV_VertexID) : SV_Position
             case 9: return alpha ? D3D12_BLEND_INV_DEST_ALPHA : D3D12_BLEND_INV_DEST_COLOR;
             case 10: return D3D12_BLEND_DEST_ALPHA;
             case 11: return D3D12_BLEND_INV_DEST_ALPHA;
-            case 12: case 14: return D3D12_BLEND_BLEND_FACTOR;       // ConstantColor, ConstantAlpha
-            case 13: case 15: return D3D12_BLEND_INV_BLEND_FACTOR;   // OneMinusConstantColor, OneMinusConstantAlpha
+            case 12: return D3D12_BLEND_BLEND_FACTOR;       // ConstantColor
+            case 13: return D3D12_BLEND_INV_BLEND_FACTOR;   // OneMinusConstantColor
+            case 14: return D3D12_BLEND_ALPHA_FACTOR;       // ConstantAlpha (the factor's alpha, as Vulkan's CONSTANT_ALPHA)
+            case 15: return D3D12_BLEND_INV_ALPHA_FACTOR;   // OneMinusConstantAlpha
             case 16: return alpha ? D3D12_BLEND_ONE : D3D12_BLEND_SRC_ALPHA_SAT;
             default: return D3D12_BLEND_ONE;
             }
         }
+
+        // Factors 2, 3 and 17+ and ops 5+ are not Xenos blend values this backend knows (RF-6).
+        bool BlendFactorKnown(uint32_t factor) { return factor <= 1 || (factor >= 4 && factor <= 16); }
 
         D3D12_BLEND_OP BlendOp(uint32_t op)
         {
@@ -261,6 +269,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
         {
             return format == DXGI_FORMAT_D24_UNORM_S8_UINT || format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
         }
+
+        enum FormatUse : uint32_t { USE_SAMPLE, USE_RENDER_TARGET, USE_DEPTH_STENCIL };
 
         // The typeless format of a resource whose views differ: depth/stencil, and gamma render targets (RGBA8
         // drawn through its sRGB view, sampled through the plain one).
@@ -509,7 +519,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             void DestroyBuffer(Buffer* buffer) override;
 
             void CopyUploadToTexture(Texture* texture, uint32_t level, uint64_t offset, uint32_t rowPitch) override;
-            void CopyTexture(Texture*, Texture*, const Rect*) override {}  // spec 002, T3 (today only the temporal upscaler asks for it)
+            void CopyTexture(Texture* destination, Texture* source, const Rect* region) override;
             void ClearColor(Texture* texture, const float color[4], const Rect* rect) override;
             void ClearDepthStencil(Texture* texture, float depth, uint8_t stencil, const Rect* rect) override;
 
@@ -598,8 +608,10 @@ float4 main(uint id : SV_VertexID) : SV_Position
             // Descriptors: RTVs, the CPU-only SRVs (just the null one for now) and the shader-visible heap, where
             // every pass copies the views it samples (a ring over all of it but the last slot).
             DescriptorPool m_rtvs, m_dsvs, m_cpuSrvs;
-            ComPtr<ID3D12DescriptorHeap> m_gpuSrvHeap;
-            uint32_t m_srvSize = 0;
+            ComPtr<ID3D12DescriptorHeap> m_gpuSrvHeap, m_samplerHeap;
+            uint32_t m_srvSize = 0, m_samplerSize = 0;
+            uint32_t m_samplerCount = 0;
+            std::unordered_map<uint64_t, uint32_t> m_samplerBlocks;  // hash of a draw's samplers -> first descriptor of its block of 32
             uint32_t m_nullTextureSrv = 0;
             D3D12_CPU_DESCRIPTOR_HANDLE m_nullRtv{};  // a draw's missing render target
             Ring m_descriptorRing;
@@ -614,6 +626,12 @@ float4 main(uint id : SV_VertexID) : SV_Position
             std::vector<std::unique_ptr<D3D12Shader>> m_shaders;
             ComPtr<ID3D12RootSignature> m_drawRootSignature;
             std::unordered_map<uint64_t, std::unique_ptr<D3D12Pipeline>> m_drawPipelines;
+
+            // RF-6 / RF-7: what is already in the log, so each reason and each shader is noted once.
+            std::unordered_set<std::string> m_warned;
+            std::unordered_map<uint32_t, bool> m_formatSupport;  // DXGI format * 4 + FormatUse -> usable
+            bool WarnOnce(const std::string& reason);
+            bool FormatSupported(DXGI_FORMAT format, FormatUse use);
 
             // The presenter's pipelines, kept for the device's life.
             std::vector<std::unique_ptr<D3D12Pipeline>> m_passPipelines;
@@ -763,8 +781,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
         {
             if (m_heapsBound)
                 return;
-            ID3D12DescriptorHeap* heaps[] = { m_gpuSrvHeap.Get() };
-            m_list->SetDescriptorHeaps(1, heaps);
+            ID3D12DescriptorHeap* heaps[] = { m_gpuSrvHeap.Get(), m_samplerHeap.Get() };
+            m_list->SetDescriptorHeaps(2, heaps);
             m_heapsBound = true;
         }
 
@@ -780,6 +798,30 @@ float4 main(uint id : SV_VertexID) : SV_Position
             barrier.Transition.StateAfter = state;
             m_list->ResourceBarrier(1, &barrier);
             texture->state = state;
+        }
+
+        // The whole of `source` into the top-left of `destination` (same format; the smaller of the two sizes), or `region` at the
+        // same place in both.
+        void D3D12Device::CopyTexture(Texture* destination, Texture* source, const Rect* region)
+        {
+            auto* to = static_cast<D3D12Texture*>(destination);
+            auto* from = static_cast<D3D12Texture*>(source);
+            Transition(from, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            Transition(to, D3D12_RESOURCE_STATE_COPY_DEST);
+            if (!region && from->desc.width == to->desc.width && from->desc.height == to->desc.height)
+            {
+                m_list->CopyResource(to->resource.Get(), from->resource.Get());
+                return;
+            }
+            D3D12_TEXTURE_COPY_LOCATION sourceLocation{}, destinationLocation{};
+            sourceLocation.pResource = from->resource.Get();
+            sourceLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            destinationLocation.pResource = to->resource.Get();
+            destinationLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            D3D12_BOX box{ 0, 0, 0, std::min(from->desc.width, to->desc.width), std::min(from->desc.height, to->desc.height), 1 };
+            if (region)
+                box = D3D12_BOX{ UINT(region->left), UINT(region->top), 0, UINT(region->right), UINT(region->bottom), 1 };
+            m_list->CopyTextureRegion(&destinationLocation, box.left, box.top, 0, &sourceLocation, &box);
         }
 
         void D3D12Device::ClearColor(Texture* texture, const float color[4], const Rect* rect)
@@ -832,6 +874,14 @@ float4 main(uint id : SV_VertexID) : SV_Position
         {
             auto texture = std::make_unique<D3D12Texture>();
             texture->desc = desc;
+            // RF-6: a format the adapter cannot sample or draw to gives no texture, and what uses it goes without.
+            FormatUse use = (desc.usage & USAGE_DEPTH_STENCIL) ? USE_DEPTH_STENCIL : (desc.usage & USAGE_RENDER_TARGET) ? USE_RENDER_TARGET : USE_SAMPLE;
+            if (!FormatSupported(use == USE_RENDER_TARGET ? desc.RenderFormat() : desc.format, use))
+            {
+                if (WarnOnce("rf6 texture " + std::to_string(uint32_t(desc.format))))
+                    Log("[gpu] Direct3D 12: textures of format DXGI %u are not created (not supported here)", uint32_t(desc.format));
+                return nullptr;
+            }
             D3D12_RESOURCE_DESC resourceDesc{};
             resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
             resourceDesc.Width = desc.width;
@@ -1000,18 +1050,22 @@ float4 main(uint id : SV_VertexID) : SV_Position
             auto shader = std::make_unique<D3D12Shader>();
             if (!CompileDxil(stage, hlsl, name, m_shaderCache, m_dxilCache, shader->code, &m_stats.shaderCompiles, &m_stats.shaderFailures,
                              &m_stats.shaderCached))
+            {
+                // RF-7 (the renderer asks once per shader: it remembers the failure). DXC's message is in the line before.
+                Log("[gpu] Direct3D 12: shader %s does not compile to DXIL: what uses it is not drawn", name);
                 return nullptr;
+            }
             m_shaders.push_back(std::move(shader));
             return m_shaders.back().get();
         }
 
         // The binding model of rhi.h for the game's draws: b0-b2 as root CBVs, b3 as root constants, t0-t31 as a table, the
-        // upload ring (vertex data) as t0 space1. shortcut: one static linear-clamp sampler on every s0-s31, until spec 002 T3 sends
-        // the game's samplers.
+        // upload ring (vertex data) as t0 space1, s0-s31 as a table of the game's samplers.
         bool D3D12Device::CreateDrawRootSignature()
         {
             D3D12_DESCRIPTOR_RANGE textureRange{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 32, 0, 0, 0 };
             D3D12_DESCRIPTOR_RANGE vertexRange{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 1, 0 };
+            D3D12_DESCRIPTOR_RANGE samplerRange{ D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 32, 0, 0, 0 };
             D3D12_ROOT_PARAMETER parameters[ROOT_PARAMETER_COUNT]{};
             parameters[ROOT_SYSTEM_CONSTANTS].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
             parameters[ROOT_SYSTEM_CONSTANTS].Descriptor = { 0, 0 };
@@ -1031,18 +1085,10 @@ float4 main(uint id : SV_VertexID) : SV_Position
             parameters[ROOT_EFFECTS].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
             parameters[ROOT_EFFECTS].Constants = { 3, 0, graphics::EFFECT_CONSTANT_DWORDS };
             parameters[ROOT_EFFECTS].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-            D3D12_STATIC_SAMPLER_DESC samplers[32]{};
-            for (uint32_t i = 0; i < 32; i++)
-            {
-                samplers[i].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-                samplers[i].AddressU = samplers[i].AddressV = samplers[i].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-                samplers[i].MaxAnisotropy = 1;
-                samplers[i].ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-                samplers[i].MaxLOD = D3D12_FLOAT32_MAX;
-                samplers[i].ShaderRegister = i;
-                samplers[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-            }
-            D3D12_ROOT_SIGNATURE_DESC desc{ ROOT_PARAMETER_COUNT, parameters, 32, samplers, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+            parameters[ROOT_SAMPLERS].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            parameters[ROOT_SAMPLERS].DescriptorTable = { 1, &samplerRange };
+            parameters[ROOT_SAMPLERS].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            D3D12_ROOT_SIGNATURE_DESC desc{ ROOT_PARAMETER_COUNT, parameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
             ComPtr<ID3DBlob> blob, errors;
             if (FAILED(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &errors)))
             {
@@ -1099,8 +1145,33 @@ float4 main(uint id : SV_VertexID) : SV_Position
             return HashBytes(&pso, sizeof(pso));
         }
 
-        // Blend, depth and stencil follow RB_BLENDCONTROL and RB_DEPTHCONTROL; the filter for what is not translated
-        // (RF-6) arrives with T3.
+        // One line in the log per reason (RF-6) or per shader (RF-7), whatever the number of draws.
+        bool D3D12Device::WarnOnce(const std::string& reason)
+        {
+            return m_warned.insert(reason).second;
+        }
+
+        // Whether a format can be sampled, drawn to or used as a depth target here: one query per format and use.
+        bool D3D12Device::FormatSupported(DXGI_FORMAT format, FormatUse use)
+        {
+            uint32_t id = uint32_t(format) * 4 + use;
+            auto found = m_formatSupport.find(id);
+            if (found != m_formatSupport.end())
+                return found->second;
+            D3D12_FEATURE_DATA_FORMAT_SUPPORT support{ format };
+            D3D12_FORMAT_SUPPORT1 needed = use == USE_DEPTH_STENCIL ? D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL
+                                           : use == USE_RENDER_TARGET ? D3D12_FORMAT_SUPPORT1_RENDER_TARGET
+                                                                      : D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE;
+            bool ok = SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) &&
+                      (support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D) && (support.Support1 & needed);
+            m_formatSupport[id] = ok;
+            return ok;
+        }
+
+        // Blend, depth and stencil follow RB_BLENDCONTROL and RB_DEPTHCONTROL. What this backend does not translate (RF-6: a blend
+        // factor or op that is not Xenos', a render or depth format the adapter cannot draw to) gives a null pipeline, so the draw
+        // is skipped, with one log line per reason; a shader or a PSO that fails (RF-7) the same, one line per shader. The result
+        // is cached by PsoHash like a PSO.
         Pipeline* D3D12Device::GetDrawPipeline(const DrawPipelineKey& key, bool, bool*)
         {
             uint64_t hash = PsoHash(key);
@@ -1109,7 +1180,29 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 return cached->second->state ? cached->second.get() : nullptr;
 
             auto pipeline = std::make_unique<D3D12Pipeline>();
+            std::string untranslated;  // the first reason, if any
             if (key.vs)
+            {
+                for (uint32_t i = 0; i < std::min(key.colorCount, 4u) && untranslated.empty(); i++)
+                {
+                    uint32_t blend = key.blend[i];
+                    if (!BlendFactorKnown(blend & 0x1F) || !BlendFactorKnown((blend >> 8) & 0x1F) || !BlendFactorKnown((blend >> 16) & 0x1F) ||
+                        !BlendFactorKnown((blend >> 24) & 0x1F))
+                        untranslated = "a blend factor (RB_BLENDCONTROL " + std::to_string(blend) + ")";
+                    else if (((blend >> 5) & 7) > 4 || ((blend >> 21) & 7) > 4)
+                        untranslated = "a blend operation (RB_BLENDCONTROL " + std::to_string(blend) + ")";
+                    else if (!FormatSupported(DXGI_FORMAT(key.colorFormats[i]), USE_RENDER_TARGET))
+                        untranslated = "render target format DXGI " + std::to_string(key.colorFormats[i]);
+                }
+                if (untranslated.empty() && key.depthFormat && !FormatSupported(DXGI_FORMAT(key.depthFormat), USE_DEPTH_STENCIL))
+                    untranslated = "depth format DXGI " + std::to_string(key.depthFormat);
+            }
+            if (!untranslated.empty())
+            {
+                if (WarnOnce("rf6 " + untranslated))
+                    Log("[gpu] Direct3D 12: draws that need %s are not drawn (not translated)", untranslated.c_str());
+            }
+            else if (key.vs)
             {
                 D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
                 desc.pRootSignature = m_drawRootSignature.Get();
@@ -1179,8 +1272,14 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 desc.SampleDesc.Count = 1;
                 HRESULT result = m_device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline->state));
                 if (FAILED(result))
-                    Log("[gpu] Direct3D 12: CreateGraphicsPipelineState failed (0x%08X) for vs %016llx ps %016llx", unsigned(result),
-                        (unsigned long long)key.vsHash, (unsigned long long)key.psHash);
+                {
+                    // RF-7: once per shader, however many pipelines it is in.
+                    bool newVs = WarnOnce("rf7 vs " + std::to_string(key.vsHash));
+                    bool newPs = key.ps && WarnOnce("rf7 ps " + std::to_string(key.psHash));
+                    if (newVs || newPs)
+                        Log("[gpu] Direct3D 12: no pipeline for vs %016llx ps %016llx (0x%08X): what uses them is not drawn",
+                            (unsigned long long)key.vsHash, (unsigned long long)key.psHash, unsigned(result));
+                }
                 else
                     m_stats.drawPipelines++;
             }
@@ -1193,6 +1292,36 @@ float4 main(uint id : SV_VertexID) : SV_Position
         // draws per frame); a later spec can add it back.
         void D3D12Device::Draw(const DrawCall& draw)
         {
+            // Samplers first: a full sampler heap waits for the GPU (WaitIdle submits what is recorded), which must not cut a draw.
+            // A block of 32 per distinct set of samplers; the slots past textureCount get the default description.
+            constexpr uint32_t samplerCount = 32;
+            uint64_t samplerKey = HashBytes(draw.samplers, sizeof(SamplerDesc) * std::min(draw.textureCount, 32u), samplerCount);
+            uint32_t samplerBase;
+            auto samplerIt = m_samplerBlocks.find(samplerKey);
+            if (samplerIt != m_samplerBlocks.end())
+            {
+                samplerBase = samplerIt->second;
+            }
+            else
+            {
+                if (m_samplerCount + samplerCount > SAMPLER_DESCRIPTORS)
+                {
+                    WaitIdle();
+                    m_samplerBlocks.clear();
+                    m_samplerCount = 0;
+                }
+                samplerBase = m_samplerCount;
+                m_samplerCount += samplerCount;
+                for (uint32_t i = 0; i < samplerCount; i++)
+                {
+                    D3D12_CPU_DESCRIPTOR_HANDLE handle = m_samplerHeap->GetCPUDescriptorHandleForHeapStart();
+                    handle.ptr += size_t(samplerBase + i) * m_samplerSize;
+                    D3D12_SAMPLER_DESC desc = SamplerOf(i < draw.textureCount ? draw.samplers[i] : SamplerDesc{});
+                    m_device->CreateSampler(&desc, handle);
+                }
+                m_samplerBlocks[samplerKey] = samplerBase;
+            }
+
             // Textures: their state first (a barrier needs no descriptor), then one table of 32 with only the used slots written.
             uint32_t srvs[32];
             uint32_t textureCount = std::min(draw.textureCount, 32u);
@@ -1238,6 +1367,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
             m_list->SetGraphicsRootConstantBufferView(ROOT_PS_CONSTANTS, m_uploadGpu + draw.pixelConstants);
             m_list->SetGraphicsRootDescriptorTable(ROOT_TEXTURES, GpuHeapGpu(descriptors));
             m_list->SetGraphicsRootDescriptorTable(ROOT_VERTEX_DATA, GpuHeapGpu(VERTEX_DATA_DESCRIPTOR));
+            D3D12_GPU_DESCRIPTOR_HANDLE samplerHandle = m_samplerHeap->GetGPUDescriptorHandleForHeapStart();
+            samplerHandle.ptr += uint64_t(samplerBase) * m_samplerSize;
+            m_list->SetGraphicsRootDescriptorTable(ROOT_SAMPLERS, samplerHandle);
             m_list->SetGraphicsRoot32BitConstants(ROOT_EFFECTS, graphics::EFFECT_CONSTANT_DWORDS, &draw.effects, 0);
             m_list->SetPipelineState(static_cast<D3D12Pipeline*>(draw.pipeline)->state.Get());
             m_list->OMSetRenderTargets(draw.colorCount, draw.colorCount ? rtvs : nullptr, FALSE, depthTarget ? &dsv : nullptr);
@@ -1607,12 +1739,14 @@ float4 main(uint id : SV_VertexID) : SV_Position
             if (!makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, RTV_DESCRIPTORS, false, m_rtvs.heap) ||
                 !makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, DSV_DESCRIPTORS, false, m_dsvs.heap) ||
                 !makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, CPU_SRV_DESCRIPTORS, false, m_cpuSrvs.heap) ||
-                !makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, SHADER_VISIBLE_DESCRIPTORS, true, m_gpuSrvHeap))
+                !makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, SHADER_VISIBLE_DESCRIPTORS, true, m_gpuSrvHeap) ||
+                !makeHeap(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, SAMPLER_DESCRIPTORS, true, m_samplerHeap))
             {
                 Log("[gpu] Direct3D 12: could not create the descriptor heap");
                 return false;
             }
             m_srvSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            m_samplerSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
             m_rtvs.size = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
             m_rtvs.capacity = RTV_DESCRIPTORS;
             m_rtvs.name = "RTV";
