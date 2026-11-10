@@ -265,7 +265,7 @@ PPC_FUNC(__imp__VdSwap)
     for (uint32_t i = 11; i < 64; i++)
         PPC_STORE_U32(buffer + i * 4, NOP);
 
-    gpu::CountVdSwap(frontBuffer, width, height);
+    gpu::CountVdSwap(frontBuffer, width, height, buffer);
     gpu::PaceFrame();
 
 }

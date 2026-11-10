@@ -481,6 +481,12 @@ def environment(settings, run_dir, profile=None):
         env["CRASH_RENDERER"] = str(renderer).lower()
     for key, value in settings.get("env", {}).items():
         env[key] = str(value)
+    # --parity (spec 003, tools/parity.py): the frames of the profile's `parity` list are captured (runtime/gpu/parity.h),
+    # with the settings that capture needs (`parity_settings`, e.g. subtitles on) added to CRASH_SETTINGS.
+    if settings.get("_parity") and settings.get("parity"):
+        env["CRASH_PARITY_CAPTURE"] = ",".join(str(t) for t in settings["parity"])
+        if settings.get("parity_settings"):
+            env["CRASH_SETTINGS"] = ";".join(x for x in (env.get("CRASH_SETTINGS"), settings["parity_settings"]) if x)
     # A restart from the settings screen exits with code 4 and the runner starts the game again
     # (run_profile), instead of the game relaunching itself out of the runner's sight.
     env.setdefault("CRASH_RESTART", "exit")
@@ -755,6 +761,7 @@ def main():
     parser.add_argument("--dist", action="store_true", help="roda dist\\CrashRecomp.exe como o jogador (só --userdata; "
                         "o exe acha jogo, mods, idiomas e data sozinho); implica --no-build (atualize com tools\\make_dist.py)")
     parser.add_argument("--runs", help="pasta das execuções no lugar de paths.runs (ex.: build/testes_auto)")
+    parser.add_argument("--parity", action="store_true", help="captura os quadros de `parity` do perfil (CRASH_PARITY_CAPTURE; tools/parity.py)")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -774,6 +781,8 @@ def main():
         return 0
 
     overrides = dict(parse_override(s) for s in args.set)
+    if args.parity:
+        overrides["_parity"] = True
     names = [n for n, p in profiles.items() if p.get("test")] if args.all else [args.profile]
     do_build = config.get("build", {}).get("auto", True) and not args.no_build
 

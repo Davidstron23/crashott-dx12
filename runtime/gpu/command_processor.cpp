@@ -11,6 +11,7 @@
 //   type 3: [31:30]=3, [29:16]=count-1, [14:8]=opcode, [0]=predicated; count values
 
 #include "gpu.h"
+#include "parity.h"
 #include "renderer.h"
 #include "../diagnostics.h"
 #include "../kernel/memory.h"
@@ -98,6 +99,9 @@ namespace
     // select and mask overlap. Only the command processor thread touches these.
     uint64_t g_binMask = ~0ull;
     uint64_t g_binSelect = ~0ull;
+    // The parity replay (parity.h) runs the ring on its own: no CPU to wait for, no interrupts to deliver.
+    bool g_replaying;
+    std::vector<uint32_t> g_executed;  // the packets run since the last swap, indirect buffers inlined (parity capture)
     // Counters written only by the command processor thread (read for the log): plain increments,
     // not atomic read-modify-writes (a lock-prefixed add per packet was half of the PM4 parsing).
     template <typename T>
@@ -336,6 +340,8 @@ namespace
         {
         case PM4_INTERRUPT:
         {
+            if (g_replaying)
+                break;
             // Delivered synchronously, as in Xenia: D3D's callback sequence (sub_8226CA20) is
             // SCRATCH_REG0 = mask (written back to memory), WAIT mem == mask, INTERRUPT, and the
             // callback then clears its bit in that word. If the stream ran on before the callback,
@@ -362,6 +368,8 @@ namespace
         }
         case PM4_WAIT_REG_MEM:
         {
+            if (g_replaying)
+                break;
             uint32_t waitInfo = reader.Read();
             uint32_t pollAddress = reader.Read();
             uint32_t reference = reader.Read();
@@ -495,7 +503,12 @@ namespace
             uint32_t data[10] = {};
             for (uint32_t i = 0; i < std::min(count, 10u); i++)
                 data[i] = reader.Read();
+            bool parity = gpu::parity::Active();
+            if (parity)
+                gpu::parity::BeginSwap({ g_binMask, g_binSelect });
             gpu::renderer::Swap(data[1], data[2], data[3], count >= 10 ? data + 4 : nullptr);
+            if (parity)
+                gpu::parity::EndSwap();
             break;
         }
         case PM4_IM_LOAD_IMMEDIATE:
@@ -583,6 +596,24 @@ namespace
         reader.position = dataStart + count;
     }
 
+    bool IsIndirectBuffer(uint32_t header)
+    {
+        return header >> 30 == 3 && (((header >> 8) & 0x7F) == PM4_INDIRECT_BUFFER || ((header >> 8) & 0x7F) == PM4_INDIRECT_BUFFER_PFD);
+    }
+
+    // Parity capture: the packet whose header was just read, as host-order dwords (an indirect buffer's own
+    // packet is left out: what it runs is recorded in its place).
+    void RecordPacket(const Reader& reader, uint32_t header)
+    {
+        if (IsIndirectBuffer(header))
+            return;
+        uint32_t type = header >> 30;
+        uint32_t count = type == 1 ? 2 : type == 2 ? 0 : ((header >> 16) & 0x3FFF) + 1;
+        g_executed.push_back(header);
+        for (uint32_t i = 0; i < count; i++)
+            g_executed.push_back(LoadBE32(reader.base + (reader.sizeDwords ? (reader.position + i) % reader.sizeDwords : reader.position + i) * 4));
+    }
+
     // Executes packets until `reader.position` reaches `endPosition` (dwords).
     void ExecuteBuffer(Reader reader, uint32_t endPosition, int depth)
     {
@@ -591,6 +622,8 @@ namespace
         while (reader.position != endPosition)
         {
             uint32_t header = reader.Read();
+            if (gpu::parity::Active() && !g_replaying)
+                RecordPacket(reader, header);
             {
                 uint32_t next = reader.sizeDwords ? reader.position % reader.sizeDwords : reader.position;
                 uint32_t after = reader.sizeDwords ? (reader.position + 1) % reader.sizeDwords : reader.position + 1;
@@ -701,6 +734,49 @@ namespace gpu
         Log("[gpu] read pointer write-back at 0x%08X (guest 0x%08X), block 2^%u", gpuAddress, GuestFromGpuAddress(gpuAddress), blockSizeLog2);
     }
 
+    namespace parity
+    {
+        void ReplayCommands(const CommandState& start, uint32_t stream, uint32_t dwords)
+        {
+            g_binMask = start.binMask;
+            g_binSelect = start.binSelect;
+            g_replaying = true;
+            ExecuteBuffer(Reader{ stream, 0, 0 }, dwords, 0);
+        }
+
+        const std::vector<uint32_t>& ExecutedStream()
+        {
+            return g_executed;
+        }
+
+        void ClearExecutedStream()
+        {
+            g_executed.clear();
+        }
+
+        // Does the ring between write pointers `from` and `to` call an indirect buffer that holds `address`
+        // (physical)? That kick published it.
+        bool PublishedContains(uint32_t address, uint32_t from, uint32_t to)
+        {
+            uint32_t size = g_ringSizeDwords, base = g_ringBase;
+            if (!size)
+                return false;
+            uint32_t p = from % size;
+            for (uint32_t guard = 0; p != to % size && guard < size; guard++)
+            {
+                uint32_t header = LoadBE32(base + p * 4), type = header >> 30;
+                if (IsIndirectBuffer(header))
+                {
+                    uint32_t start = LoadBE32(base + (p + 1) % size * 4) & 0x1FFFFFFC, length = LoadBE32(base + (p + 2) % size * 4) & 0xFFFFF;
+                    if ((address & 0x1FFFFFFF) - start < length * 4)
+                        return true;
+                }
+                p = (p + 1 + (type == 1 ? 2 : type == 2 ? 0 : ((header >> 16) & 0x3FFF) + 1)) % size;
+            }
+            return false;
+        }
+    }
+
     void WakeCommandProcessor()
     {
         {
@@ -708,6 +784,9 @@ namespace gpu
             g_wake = true;
         }
         g_condition.notify_one();
+        // Every publication of CP_RB_WPTR (D3D's native kick, d3d_native.cpp, and the trapped store) ends here.
+        if (parity::Active())
+            parity::OnKick();
     }
 
     uint64_t TakeCommandDwords()
