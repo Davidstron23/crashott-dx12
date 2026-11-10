@@ -33,6 +33,7 @@
 #include "diagnostics.h"
 #include "fs/vfs.h"
 #include "gpu/gpu.h"
+#include "gpu/parity.h"
 #include "gpu/renderer.h"
 #include "gpu/shader_warmup.h"
 #include "kernel/memory.h"
@@ -63,6 +64,7 @@ int main(int argc, char** argv)
 
     // After a restart from the settings screen: the previous process may still be exiting.
     settings::HandleRestartArguments(argc, argv);
+    gpu::parity::PrepareReplay(argc, argv);  // --parity-replay: shader compilation = sync
     boot::HandleArguments(argc, argv);  // --skip-intros, --boot (settings/direct_boot.h)
     dev::console::HandleArguments(argc, argv);  // --dev-console (dev/dev_console.h)
 
@@ -143,6 +145,8 @@ int main(int argc, char** argv)
     }
     for (int i = 1; i + 1 < argc; i++)
     {
+        if (strcmp(argv[i], "--parity-replay") == 0)
+            return gpu::parity::Replay(argv[i + 1]);
         if (strcmp(argv[i], "--test-shaders") == 0)
             return gpu::renderer::TestShaders(argv[i + 1]) ? 2 : 0;
         if (strcmp(argv[i], "--settings-preview") == 0)

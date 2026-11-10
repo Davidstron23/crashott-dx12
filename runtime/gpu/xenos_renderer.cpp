@@ -34,6 +34,7 @@
 #include "hd_textures.h"
 #include "lighting.h"
 #include "overlay.h"
+#include "parity.h"
 #include "png_writer.h"
 #include "texture_decode.h"
 #include "widescreen.h"
@@ -3933,6 +3934,11 @@ float4 main(float4 position : SV_Position) : SV_Target
         return g_active;
     }
 
+    const char* ApiName()
+    {
+        return g_d3d12 ? "d3d12" : "vulkan";
+    }
+
     int TestShaders(const std::filesystem::path& folder)
     {
         // HLSL -> SPIR-V with DXC, as the Vulkan renderer compiles them; with Direct3D 12 requested (same priority as at
@@ -4017,8 +4023,50 @@ float4 main(float4 position : SV_Position) : SV_Target
 
     void Draw(const DrawPacket& packet)
     {
-        if (g_active)
+        if (!g_active)
+            return;
+        if (!parity::Active())
+        {
             DrawImpl(packet);
+            return;
+        }
+        // Parity tool (parity.h): one row per draw or resolve packet, with why it was discarded, if it was,
+        // and in the digest pass what the draw left in its first render target.
+        uint64_t skippedBefore[8];
+        memcpy(skippedBefore, g_stats.skipReasons, sizeof(skippedBefore));
+        DrawImpl(packet);
+        parity::Row row{};
+        row.resolve = (Reg(xenos::REG_RB_MODECONTROL) & 7) == uint32_t(xenos::EdramMode::Copy);
+        row.vs = g_currentVertexShader ? g_currentVertexShader->info.hash : 0;
+        row.ps = g_currentPixelShader ? g_currentPixelShader->info.hash : 0;
+        uint32_t colorInfo = Reg(xenos::ColorInfoRegister(0)), surfaceInfo = Reg(xenos::REG_RB_SURFACE_INFO);
+        uint32_t scissor = Reg(xenos::REG_PA_SC_WINDOW_SCISSOR_BR);
+        row.base = colorInfo & 0xFFF;
+        row.format = (colorInfo >> 16) & 0xF;
+        row.width = scissor & 0x3FFF;
+        row.height = (scissor >> 16) & 0x3FFF;
+        row.msaa = (surfaceInfo >> 16) & 3;
+        row.depthBase = Reg(xenos::REG_RB_DEPTH_INFO) & 0xFFF;
+        row.reason = "";
+        for (uint32_t i = 0; i < 8; i++)
+            if (g_stats.skipReasons[i] != skippedBefore[i])
+                row.reason = SKIP_NAMES[i];
+        if (!row.resolve && !*row.reason && !(packet.drawInitiator >> 16))
+            row.reason = "empty";
+        // Only a draw that wrote colour target 0 (the target exists: it was just drawn into).
+        if (parity::WantDigests() && !row.resolve && !*row.reason && g_currentPixelShader && (g_currentPixelShader->info.colorTargetsWritten & 1) &&
+            (Reg(xenos::REG_RB_COLOR_MASK) & 0xF))
+        {
+            std::vector<uint8_t> pixels;
+            uint32_t width, height;
+            RenderTarget& target = GetRenderTarget(false, row.base, surfaceInfo & 0x3FFF, row.format, row.msaa);
+            if (g_rhi->ReadBack(target.texture, pixels, width, height))
+            {
+                row.hasDigest = true;
+                row.digest = parity::Digest(pixels.data(), pixels.size());
+            }
+        }
+        parity::NoteRow(row);
     }
 
     void Swap(uint32_t frontBuffer, uint32_t width, uint32_t height, const uint32_t* fetchConstant)
@@ -4246,6 +4294,9 @@ float4 main(float4 position : SV_Position) : SV_Target
                 WritePng(g_screenshotDir / name, pixels.data(), dumpWidth, dumpHeight, dumpWidth * 4);
             }
         }
+
+        if (parity::Active() && *parity::ImagePath())
+            SaveScreenshot(backBuffer, parity::ImagePath());  // the image of the game, before the presenter's layer
 
         // Drawn over the image at the window's resolution, through the overlay's bitmaps.
         overlay::BeginPresent(backBuffer);

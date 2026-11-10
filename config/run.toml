@@ -143,6 +143,7 @@ input = [["@main_menu"], [2, "SHOT"], [10, "SHOT"]]
 expect = { exit = ["timeout"], events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'could not create', 'failed to compile', 'DXIL NOT signed', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] d3d12: \d+ submits, \d+ pass pipelines, [1-9]\d* draw pipelines, \d+ DXIL compiles \(0 failed\)', '\[gpu\] Direct3D 12: game shaders: \d+ compiled, \d+ from cache, 0 failed'] }
 
 # Spec 002, T1 (RF-6 em parte): a vila jogavel com Direct3D 12 passa os eventos sem [fatal] nem [crash] (as transparencias e o sampler provisional nao contam aqui).
+# Spec 003, T2 (RF-10): os quatro ultimos padroes de log_absent sao os avisos da 002 de draw ou shader sem traduzir; se aparecem, a vila perde draws em silencio e o perfil deve falhar.
 [profiles.renderizador_d3d12_vila]
 description = "renderer=d3d12 na vila (L1_E1 sem cena): todos os eventos, sem [fatal] nem [crash], com draws traduzidos"
 test = true
@@ -154,7 +155,7 @@ skip_cinematics = true
 renderer = "d3d12"
 env = { CRASH_NO_HID = "1" }
 input = [["@cinematic_skipped"], [0.5, "SHOT"], ["@gameplay_ready"], [0.5, "SHOT"], [1, "LS", 0, 1, 2.5], [4, "SHOT"], [6, "START"], [7.5, "SHOT"], [9, "START"]]
-expect = { exit = ["timeout"], events = ["level_start", "level_ready", "cinematic", "cinematic_skipped", "cinematic_done", "gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'could not create', 'failed to compile', 'DXIL NOT signed'], log_contains = ['SkipToLevel, StartLevel 0 L1_E1', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] d3d12: \d+ submits, \d+ pass pipelines, [1-9]\d* draw pipelines, \d+ DXIL compiles \(0 failed\)', '\[gpu\] Direct3D 12: game shaders: \d+ compiled, \d+ from cache, 0 failed'] }
+expect = { exit = ["timeout"], events = ["level_start", "level_ready", "cinematic", "cinematic_skipped", "cinematic_done", "gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'could not create', 'failed to compile', 'DXIL NOT signed', 'are not drawn \(not translated\)', 'are not created \(not supported here\)', 'does not compile to DXIL', 'no pipeline for vs'], log_contains = ['SkipToLevel, StartLevel 0 L1_E1', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] d3d12: \d+ submits, \d+ pass pipelines, [1-9]\d* draw pipelines, \d+ DXIL compiles \(0 failed\)', '\[gpu\] Direct3D 12: game shaders: \d+ compiled, \d+ from cache, 0 failed'] }
 
 [profiles.renderizador_d3d12_falha_dispositivo]
 description = "CRASH_D3D12_FAIL=device: o Direct3D 12 falha de propósito e o jogo volta ao Vulkan na mesma janela"
@@ -485,6 +486,9 @@ audio = false
 userdata_mode = "copy"
 boot = "level:L1_E3"
 input = [["@cinematic"], [2, "SHOT"], ["@gameplay_ready"], [0.5, "SHOT"], [1, "LS", 0, 1, 2.5], [4, "SHOT"], [6, "START"], [7.5, "SHOT"], [9, "START"]]
+# tools/parity.py: two moments of the opening cutscene, with the subtitles on (spec 003)
+parity = ["cinematic+2", "cinematic+4"]
+parity_settings = "game.subtitles=true"
 expect = { exit = ["timeout"], events = ["level_start", "level_ready", "cinematic", "gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]'], log_contains = ['SkipToLevel, StartLevel 2 L1_E3'] }
 
 [profiles.vila_sem_cena]
@@ -496,6 +500,8 @@ userdata_mode = "copy"
 boot = "level:L1_E1"
 skip_cinematics = true
 input = [["@cinematic_skipped"], [0.5, "SHOT"], ["@gameplay_ready"], [0.5, "SHOT"], [1, "LS", 0, 1, 2.5], [4, "SHOT"], [6, "START"], [7.5, "SHOT"], [9, "START"]]
+# tools/parity.py: standing, walking and the pause (frames compared between Vulkan and D3D12; spec 003)
+parity = ["gameplay_ready+0.5", "gameplay_ready+2.5", "gameplay_ready+7.5"]
 expect = { exit = ["timeout"], events = ["level_start", "level_ready", "cinematic", "cinematic_skipped", "cinematic_done", "gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]'], log_contains = ['SkipToLevel, StartLevel 0 L1_E1'] }
 
 [profiles.coop_p2]
@@ -791,6 +797,9 @@ input = [
     [21.3, "SHOT"], [22, "RB"], [23, "DOWN"], [24, "RIGHT"],
     [26, "SHOT"], [27, "B"], [29, "SHOT"], [30, "DOWN"], [31, "A"], [33, "SHOT"], [34, "B"], [37, "START"], [40, "SHOT"],
 ]
+# tools/parity.py: the pause menu, before OPTIONS (spec 003); the menus need the 30 fps limit
+parity = ["gameplay_ready+5.5"]
+parity_settings = "video.fps_limit=30"
 expect = { exit = ["timeout"], events = ["gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]'], log_contains = ['in-game options screen is frontend node 1154', 'pause menu OPTIONS selected', 'screen opened \(pause menu', 'audio\.music -> 70%', 'game option: co-op mode piggyback', 'game option: invert axis on', 'game option: autosave off', 'video\.resolution -> 1600x900', 'reconfigured: internal resolution 1600x900', 'XamContentCreateEx\(.*\(opened\)'] }
 
 [profiles.teclado]

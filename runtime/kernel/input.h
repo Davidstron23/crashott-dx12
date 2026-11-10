@@ -9,6 +9,8 @@ namespace input
     // Milliseconds since the game first read controller 0: the zero of CRASH_INPUT_SCRIPT and of
     // CRASH_SCREENSHOT_TIMES. -1 before that first read.
     int64_t ClockMs();
+    // The parity tool held the game for `ms`: the clock skips them, so the scripts keep their timeline.
+    void ShiftClock(int64_t ms);
 
     // Recording (F5, or from boot with CRASH_RECORD_INPUT=1): everything the game reads from
     // controller 0 (buttons, both sticks, both triggers) on the game tick clock, written as a

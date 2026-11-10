@@ -390,6 +390,12 @@ namespace input
         return start ? int64_t(plat::TickCountMs() - start) : -1;
     }
 
+    void ShiftClock(int64_t ms)
+    {
+        if (g_clockStart.load())
+            g_clockStart += uint64_t(ms);
+    }
+
     bool LastPress(Press& press)
     {
         std::lock_guard lock(g_pressMutex);

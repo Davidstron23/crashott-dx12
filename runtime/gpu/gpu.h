@@ -35,6 +35,8 @@ namespace gpu
     // Commits the register window, installs the write trap and starts the command processor and
     // interrupt threads (idle until the title sets them up).
     void Init();
+    // The parity replay (parity.h): the register window and the renderer only.
+    void InitReplay();
 
     uint32_t ReadRegister(uint32_t index);
     void WriteRegister(uint32_t index, uint32_t value);
@@ -63,6 +65,6 @@ namespace gpu
     void PaceFrame();
 
     // Frames: VdSwap calls and PM4 swap packets the command processor executed.
-    void CountVdSwap(uint32_t frontBuffer, uint32_t width, uint32_t height);
+    void CountVdSwap(uint32_t frontBuffer, uint32_t width, uint32_t height, uint32_t token);
     void CountExecutedSwap();
 }

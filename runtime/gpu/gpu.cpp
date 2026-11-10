@@ -1,5 +1,6 @@
 #include "gpu.h"
 #include "../settings/settings.h"
+#include "parity.h"
 #include "renderer.h"
 #include "../cpu/guest_thread.h"
 #include "../diagnostics.h"
@@ -255,10 +256,19 @@ namespace gpu
 
         AddDiagnosticReporter(LogStats);
         SetFrameLimit(uint32_t(settings::Get().fpsLimit));
+        parity::Init();
         renderer::Init();
         StartCommandProcessor();
         CreateRuntimeGuestThread("gpu interrupts", 2, InterruptThread);
         Log("[gpu] register window 0x%08X-0x%08X ready (first page trapped)", GPU_MMIO_BEGIN, GPU_MMIO_END);
+    }
+
+    void InitReplay()
+    {
+        // The parity replay (parity.h) has no game: the register window and the renderer, no threads.
+        if (!g_memory.Commit(GPU_MMIO_BEGIN, GPU_MMIO_END - GPU_MMIO_BEGIN))
+            Fatal("could not commit the GPU register window");
+        renderer::Init();
     }
 
     uint32_t ReadRegister(uint32_t index)
@@ -384,9 +394,10 @@ namespace gpu
         return g_vblanks;
     }
 
-    void CountVdSwap(uint32_t frontBuffer, uint32_t width, uint32_t height)
+    void CountVdSwap(uint32_t frontBuffer, uint32_t width, uint32_t height, uint32_t token)
     {
         uint64_t swap = ++g_vdSwaps;
+        parity::OnVdSwap(swap, token);
         if (swap <= LOGGED_SWAPS || swap % 60 == 0)
         {
             Log("[gpu] VdSwap #%llu: front buffer 0x%08X, %ux%u (vblank %llu)",

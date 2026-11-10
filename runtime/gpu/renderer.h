@@ -36,6 +36,8 @@ namespace gpu
         // --renderer (main.cpp), before Init; value null = given without a value.
         void SetRendererArgument(const char* value);
         bool IsActive();
+        // "vulkan" or "d3d12": the API in use (after any fall back).
+        const char* ApiName();
 
         // Translates and compiles every shader container (*.out) in `folder` (the game's shaders\
         // folder): a check of the microcode translator without running the game. Returns the
