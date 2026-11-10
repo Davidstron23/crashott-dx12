@@ -387,8 +387,8 @@ namespace gpu::renderer
         // Device: the graphics API backend (rhi.h) and the window.
         std::atomic<bool> g_active;
         rhi::Device* g_rhi = nullptr;
-        // Direct3D 12 is the renderer in use (spec 001). It draws the game's 2D draws (spec 002); the upscaler, the
-        // anti-aliasing, the lighting remaster and the shader warm-up stay off for it (specs 004 and later).
+        // Direct3D 12 is the renderer in use (spec 001). It draws the game's 2D draws (spec 002); the upscaler and the
+        // shader warm-up stay off for it (spec 004 and later).
         bool g_d3d12 = false;
         bool g_rendererArgumentGiven = false;      // --renderer on the command line (SetRendererArgument)
         const char* g_rendererArgument = nullptr;  // its value (from argv, which outlives Init); null: none
@@ -3888,21 +3888,10 @@ float4 main(float4 position : SV_Position) : SV_Target
         }
         NextTemporalFrame(0);
 
-        if (g_d3d12)
-        {
-            // Passes of the game's image: not started, and not rewritten in settings.toml either.
-            if (startup.antiAliasing != settings::AntiAliasing::Off)
-                Log("[gpu] Direct3D 12: anti-aliasing %s off (Vulkan only for now); settings.toml keeps it", settings::AntiAliasingName(startup.antiAliasing));
-            if (startup.ssao != settings::AoQuality::Off || startup.gi || startup.contactShadows || startup.softShadows)
-                Log("[gpu] Direct3D 12: lighting remaster off (Vulkan only for now); settings.toml keeps it");
-        }
-        else
-        {
-            if (!smaa::Init(g_rhi))
-                Log("[gpu] SMAA unavailable: video.antialiasing = smaa falls back to FXAA");
-            if (!lighting::Init(g_rhi))
-                Log("[gpu] lighting remaster unavailable");
-        }
+        if (!smaa::Init(g_rhi))
+            Log("[gpu] SMAA unavailable: video.antialiasing = smaa falls back to FXAA");
+        if (!lighting::Init(g_rhi))
+            Log("[gpu] lighting remaster unavailable");
 
         ParseScreenshotSettings();
         overlay::Init(g_rhi, g_rhi->BackBufferFormat(), g_screenshotDir);

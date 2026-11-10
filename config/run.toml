@@ -157,6 +157,19 @@ env = { CRASH_NO_HID = "1" }
 input = [["@cinematic_skipped"], [0.5, "SHOT"], ["@gameplay_ready"], [0.5, "SHOT"], [1, "LS", 0, 1, 2.5], [4, "SHOT"], [6, "START"], [7.5, "SHOT"], [9, "START"]]
 expect = { exit = ["timeout"], events = ["level_start", "level_ready", "cinematic", "cinematic_skipped", "cinematic_done", "gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'could not create', 'failed to compile', 'DXIL NOT signed', 'are not drawn \(not translated\)', 'are not created \(not supported here\)', 'does not compile to DXIL', 'no pipeline for vs'], log_contains = ['SkipToLevel, StartLevel 0 L1_E1', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] d3d12: \d+ submits, \d+ pass pipelines, [1-9]\d* draw pipelines, \d+ DXIL compiles \(0 failed\)', '\[gpu\] Direct3D 12: game shaders: \d+ compiled, \d+ from cache, 0 failed'] }
 
+[profiles.renderizador_d3d12_pasadas]
+description = "renderer=d3d12 na vila (L1_E1 sem cena) com SMAA e a luz remasterizada ligados: as pasadas correm no Direct3D 12 e a luz mede o tempo de GPU"
+test = true
+timeout = 45
+audio = false
+userdata_mode = "copy"
+boot = "level:L1_E1"
+skip_cinematics = true
+renderer = "d3d12"
+env = { CRASH_NO_HID = "1", CRASH_SETTINGS = "video.antialiasing=smaa;lighting.ssao=high;lighting.gi=true;lighting.contact_shadows=true;lighting.soft_shadows=true" }
+input = [["@cinematic_skipped"], [0.5, "SHOT"], ["@gameplay_ready"], [0.5, "SHOT"], [1, "LS", 0, 1, 2.5], [4, "SHOT"], [6, "START"], [7.5, "SHOT"], [9, "START"]]
+expect = { exit = ["timeout"], events = ["level_start", "level_ready", "cinematic", "cinematic_skipped", "cinematic_done", "gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'could not create', 'failed to compile', 'DXIL NOT signed', 'are not drawn \(not translated\)', 'are not created \(not supported here\)', 'does not compile to DXIL', 'no pipeline for vs', 'anti-aliasing .* off', 'lighting remaster off', 'SMAA unavailable', 'lighting remaster unavailable'], log_contains = ['SkipToLevel, StartLevel 0 L1_E1', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] d3d12: \d+ submits, \d+ pass pipelines, [1-9]\d* draw pipelines, \d+ DXIL compiles \(0 failed\)', '\[gpu\] Direct3D 12: game shaders: \d+ compiled, \d+ from cache, 0 failed', '\[gpu\] SMAA ready', '\[lighting\] ready', '\[lighting\] targets', '\[lighting\] \d+ frames, [\d.]+ ms of GPU per frame'] }
+
 [profiles.renderizador_d3d12_falha_dispositivo]
 description = "CRASH_D3D12_FAIL=device: o Direct3D 12 falha de propósito e o jogo volta ao Vulkan na mesma janela"
 test = true
@@ -385,7 +398,7 @@ input = [
     ["@main_menu"], [9, "RB"], [9.6, "RB"], [10.2, "SHOT"],
     [10.8, "DOWN"], [11.4, "RIGHT"], [12, "RIGHT"], [12.6, "RB"], [13.2, "SHOT"], [13.8, "RIGHT"], [14.4, "SHOT"], [15, "B"], [18, "SHOT"], [24, "SHOT"],
 ]
-expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], min_frames = 900, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'restart needed'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on', 'Direct3D 12: GPU .* by the launcher.s rule: DLSS (yes|no), FSR (yes|no)', 'video\.resolution -> 1920x1080', 'graphics\.upscaler ->', '\[settings\] renderer options changed: applying them now', '\[gpu\] reconfigured: internal resolution 1920x1080', '\[settings\] screen closed'] }
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], min_frames = 900, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'restart needed', 'anti-aliasing .* off', 'lighting remaster off'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on', 'Direct3D 12: GPU .* by the launcher.s rule: DLSS (yes|no), FSR (yes|no)', 'video\.resolution -> 1920x1080', 'graphics\.upscaler ->', '\[settings\] renderer options changed: applying them now', '\[gpu\] reconfigured: internal resolution 1920x1080', '\[settings\] screen closed', '\[gpu\] SMAA ready', '\[lighting\] ready'] }
 
 # RF-32: com Direct3D 12 e uma GPU que a regra do launcher dá por não NVIDIA, o DLSS guardado sai em cinza e o RIGHT/LEFT não volta a ele.
 [profiles.renderizador_d3d12_dlss_cinza]
@@ -801,6 +814,27 @@ input = [
 parity = ["gameplay_ready+5.5"]
 parity_settings = "video.fps_limit=30"
 expect = { exit = ["timeout"], events = ["gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]'], log_contains = ['in-game options screen is frontend node 1154', 'pause menu OPTIONS selected', 'screen opened \(pause menu', 'audio\.music -> 70%', 'game option: co-op mode piggyback', 'game option: invert axis on', 'game option: autosave off', 'video\.resolution -> 1600x900', 'reconfigured: internal resolution 1600x900', 'XamContentCreateEx\(.*\(opened\)'] }
+
+# RF-5: a pausa > OPÇÕES com Direct3D 12 e SMAA + iluminação ligados (via CRASH_SETTINGS): a resolução 1600x900 recria os alvos da cena e da luz sem cair.
+[profiles.renderizador_d3d12_resolucao_pasadas]
+description = "Direct3D 12 com SMAA e iluminação ligados: na pausa, OPÇÕES muda a resolução para 1600x900 e os alvos do SMAA e da luz se recriam sem cair para outro renderer"
+test = true
+timeout = 65
+audio = false
+userdata_mode = "copy"
+screenshot_overlay = true
+boot = "load:1"
+renderer = "d3d12"
+env = { CRASH_NO_HID = "1", CRASH_SETTINGS = "video.fps_limit=30;video.antialiasing=smaa;lighting.ssao=high;lighting.gi=true;lighting.contact_shadows=true;lighting.soft_shadows=true" }
+input = [
+    ["@gameplay_ready"],
+    [4, "START"], [6, "DOWN"], [7, "A"],
+    [9, "SHOT"], [10, "DOWN"], [11, "RIGHT"], [12, "DOWN"], [13, "RIGHT"], [14, "DOWN"], [15, "RIGHT"],
+    [16.5, "SHOT"], [17, "RB"], [18, "DOWN"], [19, "LEFT", 1.0],
+    [21.3, "SHOT"], [22, "RB"], [23, "DOWN"], [24, "RIGHT"],
+    [26, "SHOT"], [27, "B"], [29, "SHOT"], [30, "DOWN"], [31, "A"], [33, "SHOT"], [34, "B"], [37, "START"], [40, "SHOT"],
+]
+expect = { exit = ["timeout"], events = ["gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'anti-aliasing .* off', 'lighting remaster off', 'SMAA: could not create', '\[lighting\] could not create'], log_contains = ['in-game options screen is frontend node 1154', 'pause menu OPTIONS selected', 'screen opened \(pause menu', 'audio\.music -> 70%', 'game option: co-op mode piggyback', 'game option: invert axis on', 'game option: autosave off', 'video\.resolution -> 1600x900', '\[gpu\] reconfigured: internal resolution 1600x900', '\[lighting\] targets: scene 1600x900', 'XamContentCreateEx\(.*\(opened\)'] }
 
 [profiles.teclado]
 description = "Só teclado e mouse: LOAD GAME pelos menus (setas, Enter, Tab) e na fase anda (WASD), pula, ataca (mouse), giro (R), girar + ataque (Q + mouse), ação (E), bloqueio (Shift) e pausa (Esc)"

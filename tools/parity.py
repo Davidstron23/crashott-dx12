@@ -1,7 +1,7 @@
 r"""Compares one game frame between Vulkan and Direct3D 12 (spec 003, runtime/gpu/parity.h).
 
     python tools/parity.py <profile> [--set key=value ...] [--replay-env API:KEY=VALUE ...]
-                           [--replay-userdata API:folder ...] [--keep] [--no-build]
+                           [--replay-userdata API:folder ...] [--passes "KEY=VALUE;..."] [--keep] [--no-build]
 
 The profile must have `parity = [...]`: the frames to compare, as anchored times (CRASH_SCREENSHOT_TIMES).
 The profile runs once with Vulkan, capturing those frames (run_game.py --parity); then each frame is
@@ -12,7 +12,8 @@ the passes of the image (upscaler, anti-aliasing, lighting) forced off. Per fram
   RF-4  when that fails, the first draws whose result differs (draws.csv: shaders, render target)
   RF-5  a frame is REJECTED, not compared, if it was not captured, a replay did not run the captured packets,
         or a replay used another renderer than the one asked for (D3D12 falling back to Vulkan)
---replay-env adds an environment variable to the replays of one API (d3d12:CRASH_D3D12_FAIL=device);
+--passes turns passes of the image back on (CRASH_SETTINGS syntax, ';' separated, e.g. "video.antialiasing=smaa"): they
+go after the forced-off ones and win; the upscaler cannot be turned on. --replay-env adds an environment variable to the replays of one API (d3d12:CRASH_D3D12_FAIL=device);
 --replay-userdata copies a folder over that API's userdata copy (a shaderoverride). The captures (game
 memory: ~120 MB each) are deleted when the frame passes, unless --keep. Exit code: 0 = every frame passes.
 """
@@ -141,6 +142,7 @@ def main():
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="as run_game.py --set")
     parser.add_argument("--replay-env", action="append", default=[], metavar="API:KEY=VALUE")
     parser.add_argument("--replay-userdata", action="append", default=[], metavar="API:FOLDER")
+    parser.add_argument("--passes", default="", metavar="SETTINGS", help="settings that turn passes back on, CRASH_SETTINGS syntax (not graphics.upscaler)")
     parser.add_argument("--keep", action="store_true", help="keep the captures after a pass")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--background", action="store_true", help="keep the game windows off screen and at the back (run_game.py --background)")
@@ -155,6 +157,11 @@ def main():
         api, _, folder = item.partition(":")
         extra_userdata.setdefault(api, []).append(folder)
 
+    passes = ";".join(x.strip() for x in args.passes.split(";") if x.strip())
+    for item in passes.split(";"):
+        if item.partition("=")[0].strip() == "graphics.upscaler":
+            sys.exit("--passes: the upscaler stays off in a parity run (graphics.upscaler cannot be set)")
+
     config = run_game.load_config(run_game.CONFIG)
     profile = config["profiles"].get(args.profile)
     if not profile or not profile.get("parity"):
@@ -162,7 +169,7 @@ def main():
     overrides = dict(run_game.parse_override(s) for s in args.set)
     env = dict(overrides.get("env", profile.get("env", {})))
     env.setdefault("CRASH_NO_HID", "1")
-    env["CRASH_SETTINGS"] = ";".join(x for x in (env.get("CRASH_SETTINGS"), PASSES_OFF) if x)
+    env["CRASH_SETTINGS"] = ";".join(x for x in (env.get("CRASH_SETTINGS"), PASSES_OFF, passes) if x)
     overrides.update(env=env, renderer="vulkan", _parity=True)
 
     started = time.time()
@@ -170,6 +177,7 @@ def main():
                                   background=args.background)
     run_dir = Path(result["run_dir"])
     wanted = len(profile["parity"])
+    print(f"== parity {args.profile}: passes: {passes or 'all off'}")
     print(f"== parity {args.profile}: capture done in {time.time() - started:.0f} s")
     all_ok = True
     for n in range(1, wanted + 1):
