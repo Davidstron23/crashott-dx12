@@ -619,10 +619,11 @@ namespace
     {
         if (!reader.sizeDwords)
             Bump(g_commandDwords, uint64_t(endPosition - reader.position));
+        const bool record = gpu::parity::Active() && !g_replaying;  // both fixed while a buffer runs
         while (reader.position != endPosition)
         {
             uint32_t header = reader.Read();
-            if (gpu::parity::Active() && !g_replaying)
+            if (record)
                 RecordPacket(reader, header);
             {
                 uint32_t next = reader.sizeDwords ? reader.position % reader.sizeDwords : reader.position;

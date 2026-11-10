@@ -57,12 +57,14 @@ namespace gpu::parity
             std::string key, tail;
         };
         std::vector<Line> g_rows;
-        void WriteRows(const fs::path& path)
+        bool WriteRows(const fs::path& path)
         {
             std::ofstream out(path);
             out << "index,type,vs,ps,rt,reason,digest\n";
             for (size_t i = 0; i < g_rows.size(); i++)
                 out << i << ',' << g_rows[i].key << ',' << g_rows[i].tail << '\n';
+            out.close();
+            return !out.fail();
         }
 
         // Capture ---------------------------------------------------------------------------------
@@ -86,20 +88,21 @@ namespace gpu::parity
         std::string g_imagePath;
 
         // The committed physical memory, the empty 64 KB blocks skipped: {u32 guest, u32 bytes, data}...
-        uint64_t WriteMemory(const fs::path& path)
+        bool WriteMemory(const fs::path& path, uint64_t& total)
         {
             static const std::vector<uint8_t> zero(BLOCK);
+            total = 0;
             FILE* out = plat::OpenCFile(path, "wb");
             if (!out)
-                return 0;
-            uint64_t total = 0;
+                return false;
+            bool ok = true;
             uint32_t runStart = 0, runBytes = 0;
             auto flush = [&] {
                 if (!runBytes)
                     return;
-                fwrite(&runStart, 4, 1, out);
-                fwrite(&runBytes, 4, 1, out);
-                fwrite(g_memory.Translate(runStart), 1, runBytes, out);
+                ok &= fwrite(&runStart, 4, 1, out) == 1;
+                ok &= fwrite(&runBytes, 4, 1, out) == 1;
+                ok &= fwrite(g_memory.Translate(runStart), 1, runBytes, out) == runBytes;
                 total += runBytes;
                 runBytes = 0;
             };
@@ -118,8 +121,8 @@ namespace gpu::parity
                     flush();
             }
             flush();
-            fclose(out);
-            return total;
+            ok &= fclose(out) == 0;
+            return ok;
         }
 
         void WriteCapture()
@@ -135,23 +138,47 @@ namespace gpu::parity
                 Log("[parity] could not write %s", (g_frameDirectory / "state.bin").string().c_str());
                 return;
             }
-            fwrite(&MAGIC, 4, 1, state);
-            fwrite(&g_start.command, sizeof(CommandState), 1, state);
-            fwrite(g_start.registers.data(), 4, g_start.registers.size(), state);
-            fclose(state);
+            bool ok = fwrite(&MAGIC, 4, 1, state) == 1;
+            ok &= fwrite(&g_start.command, sizeof(CommandState), 1, state) == 1;
+            ok &= fwrite(g_start.registers.data(), 4, g_start.registers.size(), state) == g_start.registers.size();
+            ok &= fclose(state) == 0;
+            if (!ok)
+            {
+                Log("[parity] cannot write %s", (g_frameDirectory / "state.bin").string().c_str());
+                return;
+            }
             const std::vector<uint32_t>& stream = ExecutedStream();
             FILE* packets = plat::OpenCFile(g_frameDirectory / "stream.bin", "wb");
+            ok = packets && fwrite(stream.data(), 4, stream.size(), packets) == stream.size();
             if (packets)
+                ok &= fclose(packets) == 0;
+            if (!ok)
             {
-                fwrite(stream.data(), 4, stream.size(), packets);
-                fclose(packets);
+                Log("[parity] cannot write %s", (g_frameDirectory / "stream.bin").string().c_str());
+                return;
             }
-            uint64_t bytes = WriteMemory(g_frameDirectory / "memory.bin");
-            WriteRows(g_frameDirectory / "live_draws.csv");
+            uint64_t bytes = 0;
+            if (!WriteMemory(g_frameDirectory / "memory.bin", bytes))
+            {
+                Log("[parity] cannot write %s", (g_frameDirectory / "memory.bin").string().c_str());
+                return;
+            }
+            if (!WriteRows(g_frameDirectory / "live_draws.csv"))
+            {
+                Log("[parity] cannot write %s", (g_frameDirectory / "live_draws.csv").string().c_str());
+                return;
+            }
+            // capture.txt goes last: tools/parity.py takes it as the mark of a complete capture.
             const char* settings = getenv("CRASH_SETTINGS");
-            std::ofstream(g_frameDirectory / "capture.txt") << "version=1\napi=" << renderer::ApiName() << "\nswap=" << g_swaps
-                                                              << "\nsettings=" << (settings ? settings : "") << '\n';
-            Log("[parity] frame %d captured (swap #%llu, %zu packets, %.0f MB of memory) in %s", g_captured, (unsigned long long)g_swaps,
+            std::ofstream marker(g_frameDirectory / "capture.txt");
+            marker << "version=1\napi=" << renderer::ApiName() << "\nswap=" << g_swaps << "\nsettings=" << (settings ? settings : "") << '\n';
+            marker.close();
+            if (marker.fail())
+            {
+                Log("[parity] cannot write %s", (g_frameDirectory / "capture.txt").string().c_str());
+                return;
+            }
+            Log("[parity] frame %d captured (swap #%llu, %zu draws, %.0f MB of memory) in %s", g_captured, (unsigned long long)g_swaps,
                 g_rows.size(), double(bytes) / 1048576.0, g_frameDirectory.string().c_str());
         }
 
@@ -221,13 +248,13 @@ namespace gpu::parity
                 std::string expected = std::to_string(i) + ',' + g_rows[i].key + ',';
                 if (!std::getline(in, line) || line.compare(0, expected.size(), expected) != 0)
                 {
-                    Log("[parity] packet %zu differs from the live run: replay '%s'; live '%s'", i, expected.c_str(), in ? line.c_str() : "(none)");
+                    Log("[parity] draw %zu differs from the live run: replay '%s'; live '%s'", i, expected.c_str(), in ? line.c_str() : "(none)");
                     return false;
                 }
             }
             if (std::getline(in, line))
             {
-                Log("[parity] the live run has more packets than the replay (%zu)", g_rows.size());
+                Log("[parity] the live run has more draws than the replay (the replay has %zu)", g_rows.size());
                 return false;
             }
             return true;
@@ -296,6 +323,7 @@ namespace gpu::parity
             return;
         g_holdRequested = false;
         std::unique_lock lock(g_mutex);
+        g_release = false;  // a release left over from a frame that timed out must not skip this wait
         g_held = true;
         g_heldSince = std::chrono::steady_clock::now();
         g_condition.notify_all();
@@ -318,6 +346,8 @@ namespace gpu::parity
         g_wanted = ++g_swaps == g_target;
         if (!g_wanted)
             return;
+        // shortcut: the folder number counts attempts, not the requested frame; they differ after a dropped
+        // frame (tools/parity.py then rejects the later frames), fix by tracking each time's index.
         g_frameDirectory = g_directory / ("parity_" + std::to_string(++g_captured));
         std::error_code error;
         fs::create_directories(g_frameDirectory, error);
@@ -438,7 +468,7 @@ namespace gpu::parity
         }
         WriteRows(g_replayDirectory / ("replay_" + api + "_draws.csv"));
         bool same = SameAsLive(g_replayDirectory / "live_draws.csv");
-        Log("[parity] replay done: %zu packets, %s the live run", g_rows.size(), same ? "the same as" : "NOT the same as");
+        Log("[parity] replay done: %zu draws, %s the live run", g_rows.size(), same ? "the same as" : "NOT the same as");
         return same ? 0 : 2;
     }
 }

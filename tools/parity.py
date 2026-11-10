@@ -53,27 +53,39 @@ def replay(run_dir, frame, api, number, extra_env, extra_userdata, background=Fa
     args[args.index("--userdata") + 1] = str(userdata)
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("CRASH_")}
     env["CRASH_NO_HID"] = "1"
-    env["CRASH_SETTINGS"] = ";".join(x for x in (info["env"].get("CRASH_SETTINGS"), PASSES_OFF) if x)
+    env["CRASH_SETTINGS"] = info["env"].get("CRASH_SETTINGS") or PASSES_OFF  # the capture's already has PASSES_OFF
     for key, value in extra_env.get(api, []):
         env[key] = f"{env[key]};{value}" if key == "CRASH_SETTINGS" else value
     log = frame / f"{api}_{number}.log"
     with open(log, "wb") as out:
-        process = subprocess.Popen(args + ["--renderer", api, "--parity-replay", str(frame)], stdout=out, stderr=subprocess.STDOUT, env=env)
+        process = subprocess.Popen(args + ["--renderer", api, "--parity-replay", str(frame)], stdout=out, stderr=subprocess.STDOUT, env=env, cwd=run_game.ROOT)
         try:
             with run_game.window_away(process.pid, background):
-                code = process.wait(timeout=REPLAY_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-            return f"{api} replay took over {REPLAY_TIMEOUT} s"
+                try:
+                    code = process.wait(timeout=REPLAY_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                    return f"{api} replay took over {REPLAY_TIMEOUT} s"
+        finally:
+            if process.poll() is None:  # Ctrl+C or any error while waiting: do not leave the game running
+                process.kill()
+                process.wait()
     text = log.read_text(encoding="utf-8", errors="replace")
     used = re.search(r"^\[parity\] renderer in use: (\w+)", text, re.MULTILINE)
-    if code == 2:
-        return "the replay did not run the captured packets: " + ([l for l in text.splitlines() if l.startswith("[parity]")] or ["?"])[-2]
-    if code != 0 or not used:
-        return f"{api} replay failed (exit {code}, see {log.name})"
+    if code != 0:
+        lines = [l for l in text.splitlines() if l.startswith("[parity]")]
+        why = next((l for l in lines if "differs from the live run" in l or "has more draws" in l), lines[-1] if lines else "no [parity] line in the log")
+        if code == 2:
+            return "the replay did not run the captured draws: " + why
+        return f"{api} replay failed (exit {code}, see {log.name}): {why}"
+    if not used:
+        return f"{api} replay failed (no renderer line, see {log.name})"
     if used.group(1) != api:
         return f"asked for {api}, the replay used {used.group(1)}"
+    for suffix in (".png", "_draws.csv"):
+        if not (frame / f"replay_{api}{suffix}").exists():
+            return "replay did not write its image/digests"
     for suffix in (".png", "_draws.csv"):
         shutil.move(frame / f"replay_{api}{suffix}", frame / f"{api}_{number}{suffix}")
     return None
@@ -162,7 +174,7 @@ def main():
     all_ok = True
     for n in range(1, wanted + 1):
         frame, name = run_dir / f"parity_{n}", f"frame {n}/{wanted} ({profile['parity'][n - 1]})"
-        problem = None if (frame / "memory.bin").exists() else "not captured (the event did not come before the timeout, or the game was not held: see run.log)"
+        problem = None if (frame / "capture.txt").exists() else "not captured (the event did not come before the timeout, or the game was not held: see run.log)"
         for api, number in RUNS:
             problem = problem or replay(run_dir, frame, api, number, extra_env, extra_userdata, args.background)
         if problem:

@@ -630,7 +630,7 @@ def keep_window_away(pid, stop_event):
     visit_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     user32.EnumWindows.argtypes = [visit_type, wintypes.LPARAM]
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN = 76, 77, 78, 79
-    HWND_BOTTOM, SWP_NOSIZE, SWP_NOACTIVATE = 1, 0x0001, 0x0010
+    HWND_BOTTOM, SWP_NOSIZE, SWP_NOACTIVATE, SWP_ASYNCWINDOWPOS = 1, 0x0001, 0x0010, 0x4000
     started, moved = time.monotonic(), []
 
     def visit(hwnd, _):
@@ -643,7 +643,7 @@ def keep_window_away(pid, stop_event):
         left, top = user32.GetSystemMetrics(SM_XVIRTUALSCREEN), user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
         right, bottom = left + user32.GetSystemMetrics(SM_CXVIRTUALSCREEN), top + user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
         if rect.right > left and rect.left < right and rect.bottom > top and rect.top < bottom:
-            user32.SetWindowPos(hwnd, HWND_BOTTOM, left - (rect.right - rect.left), rect.top, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE)
+            user32.SetWindowPos(hwnd, HWND_BOTTOM, left - (rect.right - rect.left), rect.top, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS)
             if not moved:
                 moved.append(time.monotonic() - started)
                 print(f"   --background: window of PID {pid} moved off screen {moved[0] * 1000:.0f} ms after launch", flush=True)
@@ -667,7 +667,7 @@ def window_away(pid, enabled):
         yield
     finally:
         stop.set()
-        thread.join()
+        thread.join(timeout=2)  # a hung game must not block the caller
 
 
 def run_profile(config, name, overrides, do_build, dist=False, background=False):

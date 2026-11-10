@@ -9,11 +9,13 @@
 //     in the first kick (CP_RB_WPTR write) that publishes its next VdSwap's swap token, the command
 //     processor runs up to that frame's swap, and the frame is written to <CRASH_SCREENSHOT_DIR>\parity_<n>\:
 //     the registers at the start of the frame, the packets it executed and the physical memory at its end,
-//     the image and the draws as they were in the live run. Then the game goes on.
+//     the image and the draws as they were in the live run. Then the game goes on. capture.txt is the last
+//     file written: a folder without it is an incomplete capture.
 //   --parity-replay <parity_n folder> (with --renderer): runs the packets on their own five times with
 //     the renderer asked for (pass 4 writes the image, pass 5 one digest per draw) and writes
 //     replay_<api>.png and replay_<api>_draws.csv there. Exit 0, or 2 if the replay's packets are
-//     not the live ones.
+//     not the live ones, or 1 if the replay could
+//     not run at all (missing or unreadable capture).
 // Neither is set: nothing here runs.
 
 #include <cstddef>
@@ -33,7 +35,7 @@ namespace gpu::parity
     {
         bool resolve;
         uint64_t vs, ps;
-        uint32_t base, format, width, height, msaa, depthBase;  // of colour target 0
+        uint32_t base, format, width, height, msaa, depthBase;  // colour target 0; width/height: PA_SC_WINDOW_SCISSOR_BR
         const char* reason;  // why nothing was drawn, or ""
         bool hasDigest;
         uint64_t digest;
