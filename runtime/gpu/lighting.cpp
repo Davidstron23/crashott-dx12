@@ -315,6 +315,36 @@ Out main(float4 position : SV_Position)
         return o;
     float4 ha = t2.SampleLevel(linearClamp, aoUV, 0.0);
     float hs = t3.SampleLevel(linearClamp, aoUV, 0.0).x;
+    // History kept within this frame's 3x3 neighbourhood (mean +- 1.25 sigma): a moving occluder
+    // (Crash, the characters of a cutscene) changes the AO and shadow of the still surfaces around
+    // it, which the depth test cannot see, and their old value trailed behind it as a ghost.
+    float4 m1 = 0.0, m2 = 0.0;
+    float s1 = 0.0, s2 = 0.0, count = 0.0;
+    [unroll] for (int j = -1; j <= 1; j++)
+    {
+        [unroll] for (int i = -1; i <= 1; i++)
+        {
+            int2 q = clamp(ap + int2(i, j), int2(0, 0), int2(sizes.xy) - 1);
+            if (t6.Load(int3(q, 0)).x <= 0.0)
+                continue;
+            float4 na = t0.Load(int3(q, 0));
+            float ns = t1.Load(int3(q, 0)).x;
+            m1 += na;
+            m2 += na * na;
+            s1 += ns;
+            s2 += ns * ns;
+            count += 1.0;
+        }
+    }
+    m1 /= count;
+    m2 /= count;
+    s1 /= count;
+    s2 /= count;
+    const float gamma = 1.25;
+    float4 sigmaA = sqrt(max(m2 - m1 * m1, 0.0)) * gamma;
+    float sigmaS = sqrt(max(s2 - s1 * s1, 0.0)) * gamma;
+    ha = clamp(ha, m1 - sigmaA, m1 + sigmaA);
+    hs = clamp(hs, s1 - sigmaS, s1 + sigmaS);
     const float blend = 0.12;
     o.a = lerp(ha, o.a, blend);
     o.s = lerp(hs, o.s, blend);
