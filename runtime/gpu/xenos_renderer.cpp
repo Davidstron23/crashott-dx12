@@ -3545,7 +3545,7 @@ float4 main(float4 position : SV_Position) : SV_Target
                    GetResolveDepthPackedPipeline() && GetPresentPipeline(g_rhi->BackBufferFormat()) && GetPresentPipeline(DXGI_FORMAT_R8G8B8A8_UNORM);
         }
         // The API the player asked for (renderer_choice.h), with what was ignored and why in the log.
-        choice::Choice RequestedRenderer()
+        choice::Choice RequestedRenderer(bool log = true)
         {
             choice::Request request;
             request.argumentGiven = g_rendererArgumentGiven;
@@ -3553,6 +3553,8 @@ float4 main(float4 position : SV_Position) : SV_Target
             request.environment = getenv("CRASH_RENDERER");
             request.settings = settings::RendererRequested(request.settingsRenderer);
             choice::Choice chosen = choice::Resolve(request);
+            if (!log)
+                return chosen;
             for (const std::string& line : chosen.ignored)
                 Log("%s", line.c_str());
             Log("[gpu] renderer requested: %s (%s)", settings::RendererName(chosen.renderer), choice::SourceLabel(chosen.source));
@@ -3937,7 +3939,10 @@ float4 main(float4 position : SV_Position) : SV_Target
         // start-up), -> DXIL through the DXIL cache, and shadercache\ is not even created.
         g_shaderCacheDir = vfs::UserDataDir() / "shadercache";
         std::error_code error;
-        g_testDxil = RequestedRenderer().renderer == settings::Renderer::D3D12;
+        // With Vulkan this prints exactly what it always did (RF-14): the API is resolved without logging and only DXIL says so.
+        g_testDxil = RequestedRenderer(false).renderer == settings::Renderer::D3D12;
+        if (g_testDxil)
+            RequestedRenderer();  // the log lines of the choice
 #ifndef _WIN32
         if (g_testDxil)
             Log("[test] Direct3D 12 is Windows only: compiling to SPIR-V");
@@ -3945,7 +3950,8 @@ float4 main(float4 position : SV_Position) : SV_Target
 #endif
         if (!g_testDxil)
             std::filesystem::create_directories(g_shaderCacheDir, error);
-        Log("[test] compiling to %s", g_testDxil ? "DXIL (Direct3D 12)" : "SPIR-V (Vulkan)");
+        if (g_testDxil)
+            Log("[test] compiling to DXIL (Direct3D 12)");
         g_dumpShaders = true;
 
         int failures = 0, total = 0;

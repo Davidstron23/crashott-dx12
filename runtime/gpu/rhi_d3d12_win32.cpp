@@ -339,13 +339,17 @@ float4 main(uint id : SV_VertexID) : SV_Position
             return module != nullptr;
         }
 
+        // DXC's arguments but the profile: the one list both the compiler call and the cache fingerprint use (change it, change both).
+        const wchar_t* const DXC_ARGUMENTS[] = { L"-E", L"main", L"-HV", L"2018", L"-Wno-conversion", L"-Wno-ignored-attributes" };
+
         // `dump` is userdata\shadercache (empty: nothing is written); the failed HLSL goes to its sibling shaderdump\.
         // The disk cache is CompileDxil's, below; the caller has already loaded DXC.
         bool CompileDxilRaw(Stage stage, const std::string& hlsl, const char* name, const std::filesystem::path& dump, std::vector<uint8_t>& code,
                             uint64_t* compiles, uint64_t* failures)
         {
             const wchar_t* profile = stage == Stage::Pixel ? L"ps_6_0" : stage == Stage::Geometry ? L"gs_6_0" : L"vs_6_0";
-            const wchar_t* arguments[] = { L"-T", profile, L"-E", L"main", L"-HV", L"2018", L"-Wno-conversion", L"-Wno-ignored-attributes" };
+            const wchar_t* arguments[2 + std::size(DXC_ARGUMENTS)] = { L"-T", profile };
+            std::copy(std::begin(DXC_ARGUMENTS), std::end(DXC_ARGUMENTS), arguments + 2);
             DxcBuffer source{ hlsl.data(), hlsl.size(), DXC_CP_UTF8 };
             std::lock_guard<std::mutex> lock(g_dxcMutex);
             IDxcResult* result = nullptr;
@@ -389,19 +393,24 @@ float4 main(uint id : SV_VertexID) : SV_Position
         // DXIL disk cache (spec 002): userdata\shadercache_dxil\<hash>.dxil, a sibling of the SPIR-V one so that Direct3D 12 never
         // touches shadercache\. File = header + the DXIL container. The name is the hash of the stage and the final HLSL; the header
         // says which compiler and arguments made it, so an entry of another DXC is replaced, not trusted.
-        constexpr uint32_t DXIL_CACHE_VERSION = 1;  // bump when the header or the arguments change
-        constexpr const char* DXIL_CACHE_ARGUMENTS = "-E main -HV 2018 -Wno-conversion -Wno-ignored-attributes";
+        constexpr uint32_t DXIL_CACHE_VERSION = 2;  // bump when the header changes (the arguments are in the fingerprint)
         struct DxilCacheHeader
         {
             char magic[4];
             uint32_t version;
             uint64_t fingerprint;  // DXC (version, flags, commit) + arguments
             uint32_t stage;
-            uint32_t reserved;
+            uint32_t blobHash;     // HashBytes of the DXIL that follows, folded to 32 bits: catches altered bytes of the right size
             uint64_t hlslHash;
             uint64_t size;         // bytes of the DXIL that follow
         };
         static_assert(sizeof(DxilCacheHeader) == 40);
+
+        uint32_t BlobHash(const uint8_t* data, size_t size)
+        {
+            uint64_t hash = HashBytes(data, size);
+            return uint32_t(hash ^ (hash >> 32));
+        }
 
         uint64_t g_dxcFingerprint = 0;  // set by LoadDxc (0 = unknown compiler: nothing is cached)
 
@@ -427,8 +436,11 @@ float4 main(uint id : SV_VertexID) : SV_Position
             }
             version->Release();
             char text[256];
-            snprintf(text, sizeof(text), "dxc %u.%u/%u/%u/%s/%s", major, minor, flags, commits, commit.c_str(), DXIL_CACHE_ARGUMENTS);
-            g_dxcFingerprint = HashBytes(text, strlen(text));
+            snprintf(text, sizeof(text), "dxc %u.%u/%u/%u/%s", major, minor, flags, commits, commit.c_str());
+            uint64_t fingerprint = HashBytes(text, strlen(text));
+            for (const wchar_t* argument : DXC_ARGUMENTS)
+                fingerprint = HashBytes(argument, wcslen(argument) * sizeof(wchar_t), fingerprint);
+            g_dxcFingerprint = fingerprint;
         }
 
         bool ValidDxilCacheEntry(const std::vector<uint8_t>& file, Stage stage, uint64_t hlslHash, std::vector<uint8_t>& code)
@@ -441,6 +453,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 header.stage != uint32_t(stage) || header.hlslHash != hlslHash || header.size != file.size() - sizeof(header))
                 return false;
             code.assign(file.begin() + sizeof(header), file.end());
+            if (header.blobHash != BlobHash(code.data(), code.size()))
+                return false;
             // DXBC container: its size field (offset 24) must match, and dxil.dll must have signed it.
             if (code.size() < 28)
                 return false;
@@ -474,7 +488,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             // Only a signed container is worth keeping: the reader would throw an unsigned one away.
             if (useCache && DxilSigned(code))
             {
-                DxilCacheHeader header{ { 'C', 'D', 'X', 'C' }, DXIL_CACHE_VERSION, g_dxcFingerprint, uint32_t(stage), 0, hlslHash, code.size() };
+                DxilCacheHeader header{ { 'C', 'D', 'X', 'C' }, DXIL_CACHE_VERSION, g_dxcFingerprint, uint32_t(stage), BlobHash(code.data(), code.size()), hlslHash, code.size() };
                 file.resize(sizeof(header) + code.size());
                 memcpy(file.data(), &header, sizeof(header));
                 memcpy(file.data() + sizeof(header), code.data(), code.size());
@@ -605,7 +619,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             std::deque<uint64_t> m_frameFences;
             bool m_heapsBound = false;
 
-            // Descriptors: RTVs, the CPU-only SRVs (just the null one for now) and the shader-visible heap, where
+            // Descriptors: RTVs, the DSVs, the CPU-only SRVs (the null one and every texture's view), the samplers and the shader-visible heap, where
             // every pass copies the views it samples (a ring over all of it but the last slot).
             DescriptorPool m_rtvs, m_dsvs, m_cpuSrvs;
             ComPtr<ID3D12DescriptorHeap> m_gpuSrvHeap, m_samplerHeap;
@@ -650,7 +664,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             Timing m_timing;
             struct
             {
-                uint64_t submits = 0, passPipelines = 0, drawPipelines = 0, dxilCompiles = 0, dxilFailures = 0, dxilCached = 0;
+                uint64_t submits = 0, passPipelines = 0, drawPipelines = 0, dxilCompiles = 0, dxilFailures = 0;
                 uint64_t shaderCompiles = 0, shaderCached = 0, shaderFailures = 0;  // the game's shaders (CreateShader), RF-11
             } m_stats;
         };
@@ -851,8 +865,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
                                                          IID_PPV_ARGS(&buffer->resource))) ||
                 FAILED(buffer->resource->Map(0, &noRead, reinterpret_cast<void**>(&buffer->cpu))))
             {
-                Log("[gpu] could not create a %llu-byte upload buffer (device removed reason 0x%08X)", (unsigned long long)size,
-                    unsigned(m_device->GetDeviceRemovedReason()));
+                if (WarnOnce("upload buffer"))
+                    Log("[gpu] could not create a %llu-byte upload buffer (device removed reason 0x%08X)", (unsigned long long)size,
+                        unsigned(m_device->GetDeviceRemovedReason()));
                 return nullptr;
             }
             buffer->size = size;
@@ -915,7 +930,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
             if (FAILED(m_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &resourceDesc, texture->state, hasClear ? &clear : nullptr,
                                                          IID_PPV_ARGS(&texture->resource))))
             {
-                Log("[gpu] could not create a %ux%u texture (%s, DXGI %u)", desc.width, desc.height, desc.name, uint32_t(desc.format));
+                if (WarnOnce(std::string("texture ") + desc.name + " " + std::to_string(uint32_t(desc.format))))
+                    Log("[gpu] could not create a %ux%u texture (%s, DXGI %u)", desc.width, desc.height, desc.name, uint32_t(desc.format));
                 return nullptr;
             }
             if (desc.usage & USAGE_DEPTH_STENCIL)
@@ -1335,6 +1351,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
             uint32_t descriptors = AllocateDescriptors(32);
             for (uint32_t i = 0; i < textureCount; i++)
                 m_device->CopyDescriptorsSimple(1, GpuHeapCpu(descriptors + i), m_cpuSrvs.Cpu(srvs[i]), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            // Resource Binding Tier 1: every descriptor of the table must be valid, so the unused slots get the null SRV.
+            for (uint32_t i = textureCount; i < 32; i++)
+                m_device->CopyDescriptorsSimple(1, GpuHeapCpu(descriptors + i), m_cpuSrvs.Cpu(m_nullTextureSrv), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
             D3D12_CPU_DESCRIPTOR_HANDLE rtvs[4];
             for (uint32_t i = 0; i < draw.colorCount; i++)
@@ -1443,10 +1462,10 @@ float4 main(uint id : SV_VertexID) : SV_Position
             if (desc.vs.empty())
                 vsCode = m_fullscreenVs;
             else if (!CompileDxil(Stage::Vertex, desc.vs, (desc.name + "_vs").c_str(), m_shaderCache, m_dxilCache, vsCode, &m_stats.dxilCompiles,
-                                &m_stats.dxilFailures, &m_stats.dxilCached))
+                                &m_stats.dxilFailures, nullptr))
                 return nullptr;
             if (!CompileDxil(Stage::Pixel, desc.ps, (desc.name + "_ps").c_str(), m_shaderCache, m_dxilCache, psCode, &m_stats.dxilCompiles,
-                           &m_stats.dxilFailures, &m_stats.dxilCached))
+                           &m_stats.dxilFailures, nullptr))
                 return nullptr;
             D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
             pso.pRootSignature = pipeline->rootSignature.Get();
@@ -1684,11 +1703,6 @@ float4 main(uint id : SV_VertexID) : SV_Position
             m_shaderCache = info.shaderCache;
             // CRASH_D3D12_FAIL=shaders falls back to Vulkan: no DXIL cache is created or touched.
             m_dxilCache = m_failShaders ? std::filesystem::path() : DxilCacheFolder(info.shaderCache);
-            if (!m_dxilCache.empty())
-            {
-                std::error_code error;
-                std::filesystem::create_directories(m_dxilCache, error);  // without it, shaders compile every start
-            }
             NoteShaderCompilation(info.shaderCompilation);
             // No debug layer (spec 004): info.debug is a Vulkan switch for now.
             if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&m_factory))) ||
@@ -1704,6 +1718,12 @@ float4 main(uint id : SV_VertexID) : SV_Position
             {
                 Log("[gpu] Direct3D 12: the GPU has no Shader Model 6.0");
                 return false;
+            }
+            // Only now: a fallback to Vulkan must not leave an empty shadercache_dxil behind.
+            if (!m_dxilCache.empty())
+            {
+                std::error_code error;
+                std::filesystem::create_directories(m_dxilCache, error);  // without it, shaders compile every start
             }
             DXGI_ADAPTER_DESC1 adapterDesc{};
             ComPtr<IDXGIAdapter1> adapter;
@@ -1732,7 +1752,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 return false;
             }
 
-            // Descriptor heaps: render target views (the back buffers'), CPU-only SRVs and the shader-visible SRV heap.
+            // Descriptor heaps: render target views (the back buffers'), depth-stencil views, CPU-only SRVs, the shader-visible SRV heap and
+            // the shader-visible sampler heap.
             auto makeHeap = [this](D3D12_DESCRIPTOR_HEAP_TYPE type, uint32_t count, bool shaderVisible, ComPtr<ID3D12DescriptorHeap>& heap) {
                 D3D12_DESCRIPTOR_HEAP_DESC desc{ type, count, shaderVisible ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE };
                 return SUCCEEDED(m_device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&heap)));
@@ -1810,7 +1831,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
             // The full-screen vertex shader: if even that does not compile, nothing can be shown (the start fails).
             if (!CompileDxil(Stage::Vertex, FULLSCREEN_VS, "blit_vs", m_shaderCache, m_dxilCache, m_fullscreenVs, &m_stats.dxilCompiles,
-                            &m_stats.dxilFailures, &m_stats.dxilCached))
+                            &m_stats.dxilFailures, nullptr))
                 return false;
             // Direct3D 12 refuses DXIL that dxil.dll (next to the exe) did not sign: say so up front. The hash alone
             // does not tell: without dxil.dll, DXC's built-in validator still fills in a digest, so the DLL is checked too.
