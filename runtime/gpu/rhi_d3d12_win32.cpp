@@ -54,6 +54,7 @@ namespace gpu::rhi
     namespace
     {
         constexpr uint32_t BACK_BUFFER_COUNT = 2;
+        constexpr uint32_t TIMESTAMPS = 64;  // the device's timestamp slots (the contract in rhi.h)
         constexpr uint64_t UPLOAD_RING_SIZE = 256ull << 20;
         constexpr uint32_t RTV_DESCRIPTORS = 4096;
         constexpr uint32_t DSV_DESCRIPTORS = 1024;
@@ -561,11 +562,11 @@ float4 main(uint id : SV_VertexID) : SV_Position
             void LeaveFullscreen() override {}
             bool ReadBack(Texture* texture, std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height) override;
 
-            // Timestamps and native access are for the lighting remaster and the upscalers (specs 004, issues #6/#7).
-            void WriteTimestamp(uint32_t) override {}
-            void ResolveTimestamps(uint32_t, uint32_t) override {}
-            bool ReadTimestamps(uint32_t, uint32_t, uint64_t*) override { return false; }
-            double TimestampFrequency() const override { return 0.0; }
+            // Timestamps are for the lighting remaster; native access is for the upscalers (specs 004, issues #6/#7).
+            void WriteTimestamp(uint32_t index) override;
+            void ResolveTimestamps(uint32_t first, uint32_t count) override;
+            bool ReadTimestamps(uint32_t first, uint32_t count, uint64_t* ticks) override;
+            double TimestampFrequency() const override { return double(m_timestampFrequency); }
 
             NativeHandles Native() override { return {}; }
             bool DeviceExtensionEnabled(const char*) const override { return false; }
@@ -618,6 +619,11 @@ float4 main(uint id : SV_VertexID) : SV_Position
             std::deque<std::pair<ComPtr<ID3D12CommandAllocator>, uint64_t>> m_allocatorPool;
             std::deque<uint64_t> m_frameFences;
             bool m_heapsBound = false;
+
+            // Timestamps: resolved into a readback buffer, read by the caller frames later (past the frames in flight).
+            ComPtr<ID3D12QueryHeap> m_queryHeap;
+            ComPtr<ID3D12Resource> m_queryReadback;
+            uint64_t m_timestampFrequency = 0;
 
             // Descriptors: RTVs, the DSVs, the CPU-only SRVs (the null one and every texture's view), the samplers and the shader-visible heap, where
             // every pass copies the views it samples (a ring over all of it but the last slot).
@@ -1624,6 +1630,34 @@ float4 main(uint id : SV_VertexID) : SV_Position
             RetireCompleted();
         }
 
+        // Timestamps ------------------------------------------------------------------------------
+
+        void D3D12Device::WriteTimestamp(uint32_t index)
+        {
+            if (m_queryHeap && index < TIMESTAMPS)
+                m_list->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, index);
+        }
+
+        void D3D12Device::ResolveTimestamps(uint32_t first, uint32_t count)
+        {
+            if (m_queryHeap && first + count <= TIMESTAMPS)
+                m_list->ResolveQueryData(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, first, count, m_queryReadback.Get(), uint64_t(first) * 8);
+        }
+
+        bool D3D12Device::ReadTimestamps(uint32_t first, uint32_t count, uint64_t* ticks)
+        {
+            if (!m_queryHeap || first + count > TIMESTAMPS)
+                return false;
+            uint64_t* values = nullptr;
+            D3D12_RANGE range{ size_t(first) * 8, size_t(first + count) * 8 };
+            if (FAILED(m_queryReadback->Map(0, &range, reinterpret_cast<void**>(&values))))
+                return false;
+            memcpy(ticks, values + first, size_t(count) * 8);
+            D3D12_RANGE none{ 0, 0 };
+            m_queryReadback->Unmap(0, &none);
+            return true;
+        }
+
         bool D3D12Device::ReadBack(Texture* texture, std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height)
         {
             auto* source = static_cast<D3D12Texture*>(texture);
@@ -1860,6 +1894,20 @@ float4 main(uint id : SV_VertexID) : SV_Position
             m_backBufferWidth = info.width;
             m_backBufferHeight = info.height;
             CreateBackBuffers();
+
+            // Timestamps: without them TimestampFrequency() stays 0 and the callers skip their timing.
+            D3D12_QUERY_HEAP_DESC queryDesc{ D3D12_QUERY_HEAP_TYPE_TIMESTAMP, TIMESTAMPS, 0 };
+            bufferDesc.Width = TIMESTAMPS * sizeof(uint64_t);
+            D3D12_HEAP_PROPERTIES readbackHeap{ D3D12_HEAP_TYPE_READBACK };
+            if (SUCCEEDED(m_queue->GetTimestampFrequency(&m_timestampFrequency)) && SUCCEEDED(m_device->CreateQueryHeap(&queryDesc, IID_PPV_ARGS(&m_queryHeap))))
+            {
+                if (FAILED(m_device->CreateCommittedResource(&readbackHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                             IID_PPV_ARGS(&m_queryReadback))))
+                {
+                    m_queryHeap.Reset();
+                    m_timestampFrequency = 0;
+                }
+            }
             return true;
         }
     }
