@@ -41,7 +41,7 @@ PASSES_OFF = "graphics.upscaler=off;video.antialiasing=off;lighting.ssao=off;lig
 RUNS = [("vulkan", 1), ("vulkan", 2), ("d3d12", 1)]
 
 
-def replay(run_dir, frame, api, number, extra_env, extra_userdata):
+def replay(run_dir, frame, api, number, extra_env, extra_userdata, background=False):
     """One replay; returns (problem or None). Moves its image and draws.csv to <api>_<number>.*"""
     info = json.loads((run_dir / "settings.json").read_text(encoding="utf-8"))
     userdata = run_dir / f"userdata_{api}"
@@ -58,10 +58,13 @@ def replay(run_dir, frame, api, number, extra_env, extra_userdata):
         env[key] = f"{env[key]};{value}" if key == "CRASH_SETTINGS" else value
     log = frame / f"{api}_{number}.log"
     with open(log, "wb") as out:
+        process = subprocess.Popen(args + ["--renderer", api, "--parity-replay", str(frame)], stdout=out, stderr=subprocess.STDOUT, env=env)
         try:
-            code = subprocess.run(args + ["--renderer", api, "--parity-replay", str(frame)], stdout=out, stderr=subprocess.STDOUT,
-                                  env=env, timeout=REPLAY_TIMEOUT).returncode
+            with run_game.window_away(process.pid, background):
+                code = process.wait(timeout=REPLAY_TIMEOUT)
         except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
             return f"{api} replay took over {REPLAY_TIMEOUT} s"
     text = log.read_text(encoding="utf-8", errors="replace")
     used = re.search(r"^\[parity\] renderer in use: (\w+)", text, re.MULTILINE)
@@ -128,6 +131,7 @@ def main():
     parser.add_argument("--replay-userdata", action="append", default=[], metavar="API:FOLDER")
     parser.add_argument("--keep", action="store_true", help="keep the captures after a pass")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--background", action="store_true", help="keep the game windows off screen and at the back (run_game.py --background)")
     args = parser.parse_args()
 
     extra_env, extra_userdata = {}, {}
@@ -150,7 +154,8 @@ def main():
     overrides.update(env=env, renderer="vulkan", _parity=True)
 
     started = time.time()
-    result = run_game.run_profile(config, args.profile, overrides, config.get("build", {}).get("auto", True) and not args.no_build)
+    result = run_game.run_profile(config, args.profile, overrides, config.get("build", {}).get("auto", True) and not args.no_build,
+                                  background=args.background)
     run_dir = Path(result["run_dir"])
     wanted = len(profile["parity"])
     print(f"== parity {args.profile}: capture done in {time.time() - started:.0f} s")
@@ -159,7 +164,7 @@ def main():
         frame, name = run_dir / f"parity_{n}", f"frame {n}/{wanted} ({profile['parity'][n - 1]})"
         problem = None if (frame / "memory.bin").exists() else "not captured (the event did not come before the timeout, or the game was not held: see run.log)"
         for api, number in RUNS:
-            problem = problem or replay(run_dir, frame, api, number, extra_env, extra_userdata)
+            problem = problem or replay(run_dir, frame, api, number, extra_env, extra_userdata, args.background)
         if problem:
             print(f"  {name} REJECTED (RF-5): {problem}")
             all_ok = False

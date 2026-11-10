@@ -47,6 +47,9 @@ userdata (dist/userdata). --dist runs dist/CrashRecomp.exe (tools/make_dist.py) 
 double-clicks it.
 """
 import argparse
+import contextlib
+import ctypes
+import ctypes.wintypes as wintypes
 import datetime
 import csv
 import json
@@ -56,6 +59,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import tomllib
 from pathlib import Path
 
@@ -611,7 +616,61 @@ def check(settings, exit_name, text, frames, screenshots, perf, restarts=0, seco
     return results
 
 
-def run_profile(config, name, overrides, do_build, dist=False):
+def keep_window_away(pid, stop_event):
+    """Until stop_event is set, push the visible top-level windows of `pid` off the desktop, to the bottom of the Z order.
+
+    Test captures are read from the GPU, not the screen, so the window does not need to be seen. It is moved
+    (left of the virtual desktop, same size) and not minimized because a minimized window has a 0x0 client area
+    and the swapchain breaks. A window already outside the desktop is left alone."""
+    user32 = ctypes.WinDLL("user32")
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    visit_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [visit_type, wintypes.LPARAM]
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN = 76, 77, 78, 79
+    HWND_BOTTOM, SWP_NOSIZE, SWP_NOACTIVATE = 1, 0x0001, 0x0010
+    started, moved = time.monotonic(), []
+
+    def visit(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value != pid or not user32.IsWindowVisible(hwnd):
+            return True
+        rect = wintypes.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        left, top = user32.GetSystemMetrics(SM_XVIRTUALSCREEN), user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+        right, bottom = left + user32.GetSystemMetrics(SM_CXVIRTUALSCREEN), top + user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
+        if rect.right > left and rect.left < right and rect.bottom > top and rect.top < bottom:
+            user32.SetWindowPos(hwnd, HWND_BOTTOM, left - (rect.right - rect.left), rect.top, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE)
+            if not moved:
+                moved.append(time.monotonic() - started)
+                print(f"   --background: window of PID {pid} moved off screen {moved[0] * 1000:.0f} ms after launch", flush=True)
+        return True
+
+    callback = visit_type(visit)
+    while not stop_event.wait(0.1):
+        user32.EnumWindows(callback, 0)
+
+
+@contextlib.contextmanager
+def window_away(pid, enabled):
+    """`with window_away(process.pid, background):` runs keep_window_away in a thread for the block; no-op if not enabled."""
+    if not enabled:
+        yield
+        return
+    stop = threading.Event()
+    thread = threading.Thread(target=keep_window_away, args=(pid, stop), daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
+
+
+def run_profile(config, name, overrides, do_build, dist=False, background=False):
     settings = profile_settings(config, name, overrides)
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = resolve(config["paths"]["runs"]) / f"{stamp}_{name}"
@@ -667,17 +726,18 @@ def run_profile(config, name, overrides, do_build, dist=False):
             session = os.environ.get("CLAUDE_CODE_HOST_SESSION_ID", "").removeprefix("local_")[:8]
             print(f"   jogo: PID {process.pid}" + (f", sessão {session}" if session else "")
                   + (f", até {timeout} s" if timeout else ", sem limite de tempo"), flush=True)
-            try:
-                code = process.wait(timeout=timeout + KILL_GRACE if timeout else None)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                code = process.wait()
-                print(f"   o watchdog do runtime não encerrou o jogo; processo morto após {timeout + KILL_GRACE} s")
-            except KeyboardInterrupt:
-                process.kill()
-                process.wait()
-                print("   interrompido (Ctrl+C)")
-                code = None
+            with window_away(process.pid, background):
+                try:
+                    code = process.wait(timeout=timeout + KILL_GRACE if timeout else None)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    code = process.wait()
+                    print(f"   o watchdog do runtime não encerrou o jogo; processo morto após {timeout + KILL_GRACE} s")
+                except KeyboardInterrupt:
+                    process.kill()
+                    process.wait()
+                    print("   interrompido (Ctrl+C)")
+                    code = None
             # Restart from the settings screen: start the game again and keep tracking it.
             if code != RESTART_EXIT_CODE or restarts >= int(settings.get("max_restarts", 3)):
                 break
@@ -761,6 +821,7 @@ def main():
     parser.add_argument("--dist", action="store_true", help="roda dist\\CrashRecomp.exe como o jogador (só --userdata; "
                         "o exe acha jogo, mods, idiomas e data sozinho); implica --no-build (atualize com tools\\make_dist.py)")
     parser.add_argument("--runs", help="pasta das execuções no lugar de paths.runs (ex.: build/testes_auto)")
+    parser.add_argument("--background", action="store_true", help="mantém as janelas do jogo fora da tela e no fundo (não rouba foco nem mouse)")
     parser.add_argument("--parity", action="store_true", help="captura os quadros de `parity` do perfil (CRASH_PARITY_CAPTURE; tools/parity.py)")
     args = parser.parse_args()
 
@@ -788,7 +849,7 @@ def main():
 
     results = []
     for i, name in enumerate(names):
-        results.append(run_profile(config, name, overrides, do_build and i == 0, args.dist))
+        results.append(run_profile(config, name, overrides, do_build and i == 0, args.dist, args.background))
         if results[-1]["exit"] == "build":
             break
     if len(results) > 1:
