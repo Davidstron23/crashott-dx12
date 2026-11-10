@@ -345,9 +345,10 @@ def prepare_userdata(config, settings, run_dir):
     if (source / "content").is_dir():
         shutil.copytree(source / "content", copy / "content")
     # The tests' own shader cache (only saves compile time); merged back after the run.
-    cache = test_shadercache(config)
-    if cache.is_dir():
-        shutil.copytree(cache, copy / "shadercache")
+    # Direct3D 12's DXIL cache is a sibling folder (shadercache_dxil), copied and merged the same way.
+    for cache, name in test_caches(config):
+        if cache.is_dir():
+            shutil.copytree(cache, copy / name)
     return copy
 
 
@@ -355,18 +356,33 @@ def test_shadercache(config):
     return resolve(config["paths"].get("test_shadercache", "tests/shadercache"))
 
 
+def test_caches(config):
+    """(folder in tests, folder name in the userdata) of the SPIR-V cache and of the DXIL one."""
+    spirv = test_shadercache(config)
+    return [(spirv, "shadercache"), (spirv.parent / (spirv.name + "_dxil"), "shadercache_dxil")]
+
+
 def merge_shadercache(config, userdata):
-    """Shaders compiled during a copy-mode run go into the tests' cache (new files only), so the
-    next runs do not compile them again at boot (that slows the boot and desyncs input scripts)."""
-    source, cache = userdata / "shadercache", test_shadercache(config)
-    if not source.is_dir():
-        return 0
-    cache.mkdir(parents=True, exist_ok=True)
-    added = 0
-    for file in source.iterdir():
-        if file.is_file() and not (cache / file.name).exists():
-            shutil.copy2(file, cache / file.name)
-            added += 1
+    """Shaders compiled during a copy-mode run go into the tests' caches (new files only), so the
+    next runs do not compile them again at boot (that slows the boot and desyncs input scripts).
+    SPIR-V: new files only. DXIL: also an entry whose content changed (a new DXC keeps the name).
+    *.tmp* files are what a killed process left half-written: never copied. Returns {cache folder: files copied}."""
+    added = {}
+    for cache, name in test_caches(config):
+        source = userdata / name
+        if not source.is_dir():
+            continue
+        cache.mkdir(parents=True, exist_ok=True)
+        count = 0
+        for file in source.iterdir():
+            if not file.is_file() or ".tmp" in file.name:
+                continue
+            target = cache / file.name
+            if target.exists() and not (name == "shadercache_dxil" and target.read_bytes() != file.read_bytes()):
+                continue
+            shutil.copy2(file, target)
+            count += 1
+        added[cache] = count
     return added
 
 
@@ -668,8 +684,9 @@ def run_profile(config, name, overrides, do_build, dist=False):
     seconds = (datetime.datetime.now() - started).total_seconds()
     if settings.get("userdata_mode", "copy") == "copy":
         added = merge_shadercache(config, userdata)
-        if added:
-            print(f"   {added} shader(s) novo(s) no cache dos testes ({test_shadercache(config).relative_to(ROOT)})")
+        if any(added.values()):
+            print("   shader(s) novo(s) no cache dos testes: " +
+                  ", ".join(f"{count} em {cache.relative_to(ROOT)}" for cache, count in added.items() if count))
 
     exit_name = "interrompido" if code is None else EXIT_NAMES.get(code, f"código {code & 0xFFFFFFFF:#x}")
     text, frames, problems, pacing = analyse_log(log_path)
