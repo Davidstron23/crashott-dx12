@@ -12,6 +12,7 @@
 #include "rhi_ring.h"
 #include "../diagnostics.h"
 #include "../platform/platform.h"
+#include "../platform/text.h"
 
 #include <windows.h>
 #include <d3d12.h>
@@ -54,6 +55,7 @@ namespace gpu::rhi
     namespace
     {
         constexpr uint32_t BACK_BUFFER_COUNT = 2;
+        constexpr uint32_t REMOVE_AT_PRESENT = 120;  // CRASH_D3D12_FAIL=removed: a few seconds after the start, always the same frame
         constexpr uint32_t TIMESTAMPS = 64;  // the device's timestamp slots (the contract in rhi.h)
         constexpr uint64_t UPLOAD_RING_SIZE = 256ull << 20;
         constexpr uint32_t RTV_DESCRIPTORS = 4096;
@@ -525,6 +527,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
             bool Init(const DeviceInfo& info);
             void FailShaders() { m_failShaders = true; }
+            void RemoveOnPurpose() { m_removeOnPurpose = true; }
 
             const std::string& AdapterName() const override { return m_adapterName; }
 
@@ -591,6 +594,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
             void LogStats() override;
 
         private:
+            void CheckDeviceLost(const char* where);
+            void DrainDebugMessages();
             void WaitForFence(uint64_t value);
             void RetireCompleted();
             void CollectGarbage();
@@ -606,8 +611,12 @@ float4 main(uint id : SV_VertexID) : SV_Position
             D3D12_CPU_DESCRIPTOR_HANDLE Dsv(D3D12Texture* texture);
             void ReleaseDescriptors(D3D12Texture* texture);
             void LogSwapChain();
+            void LogDiagnostics(bool diagnostics);
 
             std::string m_adapterName;
+            ComPtr<IDXGIAdapter1> m_adapter;     // the chosen adapter, kept for the diagnostics (spec 006, T3)
+            DXGI_ADAPTER_DESC1 m_adapterDesc{};
+            bool ChooseAdapter();
             std::filesystem::path m_shaderCache;      // userdata\shadercache: only the failed HLSL goes near it (shaderdump\)
             std::filesystem::path m_dxilCache;        // userdata\shadercache_dxil
             bool m_compilationNoted = false;
@@ -622,6 +631,10 @@ float4 main(uint id : SV_VertexID) : SV_Position
             uint32_t m_failedWidth = 0, m_failedHeight = 0;  // the size ResizeBuffers refused: not tried again until the size changes
             uint32_t m_safe = 0;                              // SafeMode bits (rhi.h)
             int m_presentMode = -1;                           // the last Present's mode (0 V-Sync, 1 tearing, 2 no tearing), to log a change once
+            bool m_debugLayer = false;                        // CRASH_GPU_DEBUG (spec 006 RF-4): the debug layer is on
+            uint64_t m_layerMessages = 0;                     // errors and warnings the layer reported
+            uint32_t m_layerLogged = 0;                       // of those, how many reached the log (at most 200)
+            std::unordered_map<int, uint32_t> m_layerById;    // per message id (at most 3 each)
             bool m_presentFailed = false;                     // a failed Present is logged once
             UINT m_swapFlags = 0;                             // DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING when Windows admits it (creation and ResizeBuffers must agree)
             ComPtr<ID3D12Fence> m_fence;
@@ -670,6 +683,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
             std::vector<std::unique_ptr<D3D12Pipeline>> m_passPipelines;
             std::vector<uint8_t> m_fullscreenVs;  // DXIL of FULLSCREEN_VS
             bool m_failShaders = false;           // CRASH_D3D12_FAIL=shaders (spec 001): every pass pipeline fails, to see the fallback to Vulkan
+            bool m_removeOnPurpose = false;       // CRASH_D3D12_FAIL=removed (spec 006): the device is removed at Present number REMOVE_AT_PRESENT
+            uint32_t m_presentCount = 0;
 
             // Buffers given back by the renderer, released once the GPU is past the last submission that may use them.
             struct Garbage
@@ -690,12 +705,57 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         // Submission ------------------------------------------------------------------------------
 
+        // Spec 006 RF-4: the layer's errors and warnings go to the log (3 per id, 200 in all); all are counted. Called at the end of
+        // Present, after the self-test and before a Fatal.
+        void D3D12Device::DrainDebugMessages()
+        {
+            ComPtr<ID3D12InfoQueue> queue;
+            if (!m_debugLayer || FAILED(m_device.As(&queue)))
+                return;
+            for (UINT64 i = 0, count = queue->GetNumStoredMessages(); i < count; i++)
+            {
+                SIZE_T length = 0;
+                queue->GetMessage(i, nullptr, &length);
+                std::vector<uint8_t> storage(length);
+                auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
+                if (FAILED(queue->GetMessage(i, message, &length)) || message->Severity > D3D12_MESSAGE_SEVERITY_WARNING)
+                    continue;
+                m_layerMessages++;
+                if (m_layerLogged < 200 && ++m_layerById[int(message->ID)] <= 3)
+                {
+                    Log("[gpu] Direct3D 12: layer %s: %s", message->Severity == D3D12_MESSAGE_SEVERITY_WARNING ? "warning" : "error", message->pDescription);
+                    m_layerLogged++;
+                }
+            }
+            queue->ClearStoredMessages();
+        }
+
+        // A lost device ends the game with the reason, as Vulkan's `device lost` does (spec 006, RF-1). GetDeviceRemovedReason is S_OK
+        // while the device lives, so a call from a failure that was not a loss (a size that does not fit) does nothing.
+        void D3D12Device::CheckDeviceLost(const char* where)
+        {
+            HRESULT reason = m_device->GetDeviceRemovedReason();
+            if (reason == S_OK)
+                return;
+            DrainDebugMessages();
+            const char* name = reason == DXGI_ERROR_DEVICE_HUNG ? "DXGI_ERROR_DEVICE_HUNG"
+                             : reason == DXGI_ERROR_DEVICE_REMOVED ? "DXGI_ERROR_DEVICE_REMOVED"
+                             : reason == DXGI_ERROR_DEVICE_RESET ? "DXGI_ERROR_DEVICE_RESET"
+                             : reason == DXGI_ERROR_DRIVER_INTERNAL_ERROR ? "DXGI_ERROR_DRIVER_INTERNAL_ERROR"
+                             : reason == DXGI_ERROR_INVALID_CALL ? "DXGI_ERROR_INVALID_CALL" : "unknown";
+            Fatal("[gpu] Direct3D 12: device lost (the GPU stopped or the driver reset it) %s: %s (0x%08X)", where, name, unsigned(reason));
+        }
+
         void D3D12Device::WaitForFence(uint64_t value)
         {
-            if (m_fence->GetCompletedValue() >= value)
-                return;
-            m_fence->SetEventOnCompletion(value, m_fenceEvent);
-            WaitForSingleObject(m_fenceEvent, INFINITE);
+            if (m_fence->GetCompletedValue() < value)
+            {
+                m_fence->SetEventOnCompletion(value, m_fenceEvent);
+                WaitForSingleObject(m_fenceEvent, INFINITE);
+            }
+            // A lost device leaves the fence at UINT64_MAX: every wait would look done (the rings' loops would spin on a GPU that is gone).
+            if (m_fence->GetCompletedValue() == UINT64_MAX)
+                CheckDeviceLost("waiting for the GPU");
         }
 
         void D3D12Device::RetireCompleted()
@@ -1611,6 +1671,97 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 (m_safe & SAFE_PRESENT) ? "sequential" : "discard", m_swapFlags ? "tearing allowed" : "no tearing");
         }
 
+        // Spec 006 RF-3, after the Vulkan LogDiagnostics: always the adapter, the feature level and the shader model; with
+        // [video] gpu_diagnostics or CRASH_GPU_DIAG (info.diagnostics) also the options, the formats and the outputs. A query that
+        // fails leaves its data out and never stops the start.
+        void D3D12Device::LogDiagnostics(bool diagnostics)
+        {
+            D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
+            m_device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture));
+            LARGE_INTEGER driver{};
+            char driverText[48] = "unknown";
+            if (SUCCEEDED(m_adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &driver)))
+                snprintf(driverText, sizeof(driverText), "%u.%u.%u.%u", unsigned(HIWORD(driver.HighPart)), unsigned(LOWORD(driver.HighPart)),
+                         unsigned(HIWORD(driver.LowPart)), unsigned(LOWORD(driver.LowPart)));
+            Log("[gpu] Direct3D 12: adapter vendor 0x%04X device 0x%04X, %s GPU, %llu MB dedicated, %llu MB shared, driver %s", m_adapterDesc.VendorId,
+                m_adapterDesc.DeviceId, architecture.UMA ? "integrated" : "discrete", (unsigned long long)(m_adapterDesc.DedicatedVideoMemory >> 20),
+                (unsigned long long)(m_adapterDesc.SharedSystemMemory >> 20), driverText);
+            // The feature level and the shader model are asked apart from the 6.0 gate of Init: a runtime that does not know 6.7
+            // answers E_INVALIDARG, so ask from 6.7 down.
+            static const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_12_2, D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_11_1,
+                                                        D3D_FEATURE_LEVEL_11_0 };
+            D3D12_FEATURE_DATA_FEATURE_LEVELS featureLevels{ UINT(std::size(levels)), levels };
+            char level[16] = "unknown", model[16] = "unknown";
+            if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &featureLevels, sizeof(featureLevels))))
+                snprintf(level, sizeof(level), "%d_%d", int(featureLevels.MaxSupportedFeatureLevel >> 12) & 0xF,
+                         int(featureLevels.MaxSupportedFeatureLevel >> 8) & 0xF);
+            for (int version = 0x67; version >= 0x60; version--)
+            {
+                D3D12_FEATURE_DATA_SHADER_MODEL shaderModel{ D3D_SHADER_MODEL(version) };
+                if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &shaderModel, sizeof(shaderModel))))
+                {
+                    snprintf(model, sizeof(model), "%d.%d", int(shaderModel.HighestShaderModel) >> 4, int(shaderModel.HighestShaderModel) & 0xF);
+                    break;
+                }
+            }
+            Log("[gpu] Direct3D 12: feature level %s, highest shader model %s", level, model);
+            if (!diagnostics)
+                return;
+
+            D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
+            D3D12_FEATURE_DATA_D3D12_OPTIONS1 waves{};
+            D3D12_FEATURE_DATA_D3D12_OPTIONS12 barriers{};
+            if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options))))
+                Log("[gpu] Direct3D 12: diagnostics: resource binding tier %d, tiled resources tier %d, ROV %d, typed UAV loads of more formats %d, "
+                    "conservative rasterization tier %d",
+                    int(options.ResourceBindingTier), int(options.TiledResourcesTier), int(options.ROVsSupported), int(options.TypedUAVLoadAdditionalFormats),
+                    int(options.ConservativeRasterizationTier));
+            if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &waves, sizeof(waves))))
+                Log("[gpu] Direct3D 12: diagnostics: wave ops %d (lanes %u-%u)", int(waves.WaveOps), waves.WaveLaneCountMin, waves.WaveLaneCountMax);
+            if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS12, &barriers, sizeof(barriers))))
+                Log("[gpu] Direct3D 12: diagnostics: enhanced barriers %d", int(barriers.EnhancedBarriersSupported));
+            // The formats the renderer uses (the list of the Vulkan backend). S sampled, C color, B blend, D depth/stencil, U typed UAV;
+            // no L (linear filter) or T (transfer): Direct3D 12 has no format flag for them.
+            static const DXGI_FORMAT formatList[] = {
+                DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
+                DXGI_FORMAT_R11G11B10_FLOAT, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R16_FLOAT,
+                DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC2_UNORM,
+                DXGI_FORMAT_BC3_UNORM, DXGI_FORMAT_BC4_UNORM, DXGI_FORMAT_BC5_UNORM, DXGI_FORMAT_BC7_UNORM, DXGI_FORMAT_D24_UNORM_S8_UINT,
+                DXGI_FORMAT_D32_FLOAT_S8X24_UINT,
+            };
+            std::string formats;
+            for (DXGI_FORMAT format : formatList)
+            {
+                D3D12_FEATURE_DATA_FORMAT_SUPPORT support{ format };
+                if (FAILED(m_device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))))
+                    continue;
+                D3D12_FORMAT_SUPPORT1 f = support.Support1;
+                char text[40];
+                snprintf(text, sizeof(text), "%s%u:%s%s%s%s%s", formats.empty() ? "" : " ", uint32_t(format), (f & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE) ? "S" : "",
+                         (f & D3D12_FORMAT_SUPPORT1_RENDER_TARGET) ? "C" : "", (f & D3D12_FORMAT_SUPPORT1_BLENDABLE) ? "B" : "",
+                         (f & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL) ? "D" : "", (f & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) ? "U" : "");
+                formats += text;
+            }
+            Log("[gpu] Direct3D 12: diagnostics: formats (DXGI: S sampled, C color, B blend, D depth, U storage): %s", formats.c_str());
+            for (UINT i = 0; ; i++)
+            {
+                ComPtr<IDXGIOutput> output;
+                if (FAILED(m_adapter->EnumOutputs(i, &output)))  // NOT_FOUND ends the list; any other failure too (no endless loop)
+                    break;
+                DXGI_OUTPUT_DESC desc{};
+                if (!output || FAILED(output->GetDesc(&desc)))
+                    continue;
+                ComPtr<IDXGIOutput6> output6;
+                DXGI_OUTPUT_DESC1 desc1{};
+                bool color = SUCCEEDED(output.As(&output6)) && SUCCEEDED(output6->GetDesc1(&desc1));
+                Log("[gpu] Direct3D 12: diagnostics: output %u: %s, %ldx%ld at %ld,%ld, rotation %d, %u bits per color, color space %d", i,
+                    plat::NarrowUtf8(desc.DeviceName).c_str(), desc.DesktopCoordinates.right - desc.DesktopCoordinates.left,
+                    desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top, desc.DesktopCoordinates.left, desc.DesktopCoordinates.top, int(desc.Rotation),
+                    color ? desc1.BitsPerColor : 0, color ? int(desc1.ColorSpace) : -1);
+            }
+        }
+
         void D3D12Device::CreateBackBuffers()
         {
             for (uint32_t i = 0; i < BACK_BUFFER_COUNT; i++)
@@ -1649,6 +1800,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             else
             {
                 // Keep the old size (the buffers are taken again below) and do not retry this size every frame.
+                CheckDeviceLost("resizing the swap chain");
                 m_failedWidth = width;
                 m_failedHeight = height;
                 Log("[gpu] Direct3D 12: could not resize the swap chain to %ux%u (0x%08X): keeping %ux%u", width, height, unsigned(result),
@@ -1660,6 +1812,17 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         void D3D12Device::Present(bool vsync)
         {
+            if (m_removeOnPurpose && ++m_presentCount == REMOVE_AT_PRESENT)
+            {
+                ComPtr<ID3D12Device5> device5;
+                if (SUCCEEDED(m_device.As(&device5)))
+                {
+                    Log("[gpu] CRASH_D3D12_FAIL=removed: Direct3D 12 removes the device on purpose (Present %u)", REMOVE_AT_PRESENT);
+                    device5->RemoveDevice();
+                }
+                else
+                    Log("[gpu] CRASH_D3D12_FAIL=removed: this Windows has no ID3D12Device5, the device stays");
+            }
             D3D12Texture* backBuffer = &m_backBuffers[m_swapChain->GetCurrentBackBufferIndex()];
             Transition(backBuffer, D3D12_RESOURCE_STATE_PRESENT);
             LARGE_INTEGER submitStart, submitEnd, presentEnd;
@@ -1678,7 +1841,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
             HRESULT presented = m_swapChain->Present(vsync ? 1 : 0, tearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
             if (FAILED(presented) && !m_presentFailed)
             {
-                m_presentFailed = true;  // device loss is the next spec's
+                CheckDeviceLost("presenting");
+                m_presentFailed = true;
                 Log("[gpu] Direct3D 12: Present failed (0x%08X)", unsigned(presented));
             }
             QueryPerformanceCounter(&presentEnd);
@@ -1698,6 +1862,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             QueryPerformanceCounter(&waitEnd);
             m_timing.frameWaitTicks += uint64_t(waitEnd.QuadPart - waitStart.QuadPart);
             RetireCompleted();
+            DrainDebugMessages();
         }
 
         // Timestamps ------------------------------------------------------------------------------
@@ -1747,7 +1912,10 @@ float4 main(uint id : SV_VertexID) : SV_Position
             ComPtr<ID3D12Resource> readback;
             if (FAILED(m_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                                                          IID_PPV_ARGS(&readback))))
+            {
+                CheckDeviceLost("reading a capture");  // a lost device fails here too: do not lose the capture in silence
                 return false;
+            }
             D3D12_RESOURCE_STATES before = source->state;
             Transition(source, D3D12_RESOURCE_STATE_COPY_SOURCE);
             D3D12_TEXTURE_COPY_LOCATION destination{};
@@ -1760,6 +1928,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             m_list->CopyTextureRegion(&destination, 0, 0, 0, &sourceLocation, nullptr);
             Transition(source, before);
             WaitIdle();
+            CheckDeviceLost("reading a capture");  // before copying to the image: no half a PNG
             void* data;
             D3D12_RANGE range{ 0, SIZE_T(totalBytes) };
             if (FAILED(readback->Map(0, &range, &data)))
@@ -1781,6 +1950,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         void D3D12Device::LogStats()
         {
+            DrainDebugMessages();
+            if (m_debugLayer)
+                Log("[gpu] Direct3D 12: %llu layer message(s)", (unsigned long long)m_layerMessages);
             Log("[gpu] d3d12: %llu submits, %llu pass pipelines, %llu draw pipelines, %llu DXIL compiles (%llu failed)", (unsigned long long)m_stats.submits,
                 (unsigned long long)m_stats.passPipelines, (unsigned long long)m_stats.drawPipelines, (unsigned long long)m_stats.dxilCompiles,
                 (unsigned long long)m_stats.dxilFailures);
@@ -1800,6 +1972,65 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         // Startup ---------------------------------------------------------------------------------
 
+        // Spec 006 RF-2: Vulkan's rule (ChoosePhysicalDevice). No software adapters; shared memory (UMA) counts as integrated (2), else
+        // discrete (3); CRASH_D3D12_DEVICE=<part of the name> adds 10 (case-sensitive, like CRASH_VULKAN_DEVICE); the highest wins, the first on a tie.
+        bool D3D12Device::ChooseAdapter()
+        {
+            const char* wanted = getenv("CRASH_D3D12_DEVICE");
+            if (wanted && !*wanted)
+                wanted = nullptr;
+            std::vector<ComPtr<IDXGIAdapter1>> adapters;
+            for (UINT i = 0; ; i++)
+            {
+                ComPtr<IDXGIAdapter1> adapter;
+                if (m_factory->EnumAdapters1(i, &adapter) == DXGI_ERROR_NOT_FOUND)
+                    break;
+                if (adapter)
+                    adapters.push_back(adapter);
+            }
+            int bestScore = -1;
+            bool matched = false;
+            size_t candidates = 0;
+            std::vector<std::string> lines;
+            for (const ComPtr<IDXGIAdapter1>& adapter : adapters)
+            {
+                DXGI_ADAPTER_DESC1 desc{};
+                adapter->GetDesc1(&desc);
+                if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+                    continue;
+                std::string name = plat::NarrowUtf8(desc.Description);
+                ComPtr<ID3D12Device> device;
+                if (FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))))
+                {
+                    Log("[gpu] Direct3D 12: %s: no feature level 11_0", name.c_str());
+                    continue;
+                }
+                D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
+                device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture));
+                int score = architecture.UMA ? 2 : 3;
+                candidates++;
+                lines.push_back(name + (score == 3 ? " (discrete)" : " (integrated)"));
+                if (wanted && name.find(wanted) != std::string::npos)
+                {
+                    score += 10;
+                    matched = true;
+                }
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    m_adapter = adapter;
+                    m_adapterDesc = desc;
+                    m_device = device;
+                }
+            }
+            if (lines.size() > 1)  // like Vulkan: candidates are listed only when there is a choice
+                for (const std::string& line : lines)
+                    Log("[gpu] Direct3D 12: GPU candidate: %s", line.c_str());
+            if (wanted && !matched && candidates)
+                Log("[gpu] Direct3D 12: CRASH_D3D12_DEVICE=%s matches no adapter; the default rule applies", wanted);
+            return m_device != nullptr;
+        }
+
         // Every failure says why and returns false: the renderer then starts Vulkan in the same window.
         bool D3D12Device::Init(const DeviceInfo& info)
         {
@@ -1816,11 +2047,24 @@ float4 main(uint id : SV_VertexID) : SV_Position
             // CRASH_D3D12_FAIL=shaders falls back to Vulkan: no DXIL cache is created or touched.
             m_dxilCache = m_failShaders ? std::filesystem::path() : DxilCacheFolder(info.shaderCache);
             NoteShaderCompilation(info.shaderCompilation);
-            // No debug layer (spec 004): info.debug is a Vulkan switch for now.
-            if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&m_factory))) ||
-                FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device))))
+            // Spec 006 RF-4: only CRASH_GPU_DEBUG turns the layer on (info.debug is Vulkan's: gpu_diagnostics can set it). Before the
+            // factory and the devices, or they are made without it. Not installed: one line and on without it.
+            const char* debugEnv = getenv("CRASH_GPU_DEBUG");
+            if (debugEnv && *debugEnv)
             {
-                Log("[gpu] Direct3D 12: no device with feature level 11_0");
+                ComPtr<ID3D12Debug> debug;
+                if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+                {
+                    debug->EnableDebugLayer();
+                    m_debugLayer = true;
+                    Log("[gpu] Direct3D 12: debug layer on");
+                }
+                else
+                    Log("[gpu] Direct3D 12: CRASH_GPU_DEBUG asks for the debug layer, which is not installed (Windows Graphics Tools); going on without it");
+            }
+            if (FAILED(CreateDXGIFactory2(m_debugLayer ? DXGI_CREATE_FACTORY_DEBUG : 0, IID_PPV_ARGS(&m_factory))) || !ChooseAdapter())
+            {
+                Log("[gpu] Direct3D 12: no hardware adapter with feature level 11_0");
                 return false;
             }
             // The shaders are DXIL (Shader Model 6).
@@ -1837,13 +2081,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 std::error_code error;
                 std::filesystem::create_directories(m_dxilCache, error);  // without it, shaders compile every start
             }
-            DXGI_ADAPTER_DESC1 adapterDesc{};
-            ComPtr<IDXGIAdapter1> adapter;
-            if (SUCCEEDED(m_factory->EnumAdapterByLuid(m_device->GetAdapterLuid(), IID_PPV_ARGS(&adapter))))
-                adapter->GetDesc1(&adapterDesc);
-            char adapterName[128];
-            WideCharToMultiByte(CP_UTF8, 0, adapterDesc.Description, -1, adapterName, sizeof(adapterName), nullptr, nullptr);
-            m_adapterName = adapterName;
+            m_adapterName = plat::NarrowUtf8(m_adapterDesc.Description);  // whole, in UTF-8 (a fixed buffer cut non-ASCII names)
 
             D3D12_COMMAND_QUEUE_DESC queueDesc{ D3D12_COMMAND_LIST_TYPE_DIRECT };
             if (FAILED(m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_queue))))
@@ -1996,6 +2234,17 @@ float4 main(uint id : SV_VertexID) : SV_Position
                     m_timestampFrequency = 0;
                 }
             }
+            // CRASH_GPU_DEBUG=selftest: a call the layer must report (a buffer of size 0, nothing is created), like Vulkan's, so a clean run
+            // proves the messages reach the log.
+            if (m_debugLayer && strstr(debugEnv, "selftest"))
+            {
+                D3D12_RESOURCE_DESC empty{ D3D12_RESOURCE_DIMENSION_BUFFER, 0, 0, 1, 1, 1, DXGI_FORMAT_UNKNOWN, { 1, 0 }, D3D12_TEXTURE_LAYOUT_ROW_MAJOR };
+                ComPtr<ID3D12Resource> none;
+                m_device->CreateCommittedResource(&readbackHeap, D3D12_HEAP_FLAG_NONE, &empty, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&none));
+                DrainDebugMessages();
+                Log("[gpu] Direct3D 12: validation self-test: %llu message(s) so far", (unsigned long long)m_layerMessages);
+            }
+            LogDiagnostics(info.diagnostics);
             return true;
         }
     }
@@ -2013,7 +2262,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
     Device* CreateD3D12(const DeviceInfo& info)
     {
         // Test hook (spec 001): make the start fail on purpose, to see the fallback to Vulkan.
-        bool failShaders = false;
+        bool failShaders = false, removeDevice = false;
         if (const char* fail = getenv("CRASH_D3D12_FAIL"); fail && *fail)
         {
             if (plat::CompareNoCase(fail, "device") == 0)
@@ -2026,12 +2275,16 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 Log("[gpu] CRASH_D3D12_FAIL=shaders: the Direct3D 12 shaders fail on purpose");
                 failShaders = true;
             }
+            else if (plat::CompareNoCase(fail, "removed") == 0)
+                removeDevice = true;
             else
-                Log("[gpu] CRASH_D3D12_FAIL=%s ignored (device | shaders)", fail);
+                Log("[gpu] CRASH_D3D12_FAIL=%s ignored (device | shaders | removed)", fail);
         }
         auto device = std::make_unique<D3D12Device>();
         if (failShaders)
             device->FailShaders();
+        if (removeDevice)
+            device->RemoveOnPurpose();
         if (!device->Init(info))
             return nullptr;
         return device.release();

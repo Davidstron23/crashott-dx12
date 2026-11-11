@@ -125,7 +125,7 @@ audio = false
 userdata_mode = "copy"
 screenshots = [300, 540]
 renderer = "d3d12"
-expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] shader warm-up: \d+ shaders x 2 variants checked in [\d.]+ ms \(0 failed\)', '\[gpu\] Direct3D 12: game shaders: \d+ compiled, \d+ from cache, 0 failed'] }
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not', 'fails on purpose', 'Direct3D 12: diagnostics:'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] Direct3D 12: adapter vendor 0x[0-9A-F]{4} device 0x[0-9A-F]{4}, (discrete|integrated) GPU, \d+ MB dedicated, \d+ MB shared, driver ', '\[gpu\] Direct3D 12: feature level \d+_\d+, highest shader model \d\.\d', '\[gpu\] shader warm-up: \d+ shaders x 2 variants checked in [\d.]+ ms \(0 failed\)', '\[gpu\] Direct3D 12: game shaders: \d+ compiled, \d+ from cache, 0 failed'] }
 
 # Spec 002, T1 (RF-1, RF-3, RF-4): o menu principal com Direct3D 12 desenha o fundo do jogo (arpillera, textos, botoes) sob a camada do port.
 # As duas SHOT saem ancoradas em @main_menu (2 s e 10 s depois); a paridade de bandas e de imagem com o Vulkan se confere fora (ver build/t1_tester.py).
@@ -195,6 +195,18 @@ renderer = "d3d12"
 env = { CRASH_D3D12_FAIL = "shaders" }
 expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'Direct3D 12 renderer on', 'neither Direct3D 12 nor Vulkan', 'shader warm-up off', 'ignored \(device'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] CRASH_D3D12_FAIL=shaders: the Direct3D 12 shaders fail on purpose', '\[gpu\] Direct3D 12: present: shader compilation failed on purpose', '\[gpu\] Direct3D 12: the presenter.s shaders did not compile or link', '\[gpu\] Direct3D 12 could not start \((\d{1,3}|[12]\d{3}|3000) ms\): falling back to Vulkan', '\[gpu\] Vulkan renderer on .+; shader cache .+'] }
 
+# Spec 006, T1 (RF-1): CRASH_D3D12_FAIL=removed quita el dispositivo con ID3D12Device5::RemoveDevice en el Present 120; el juego sale `fatal` con el
+# motivo (DXGI_ERROR_*), como Vulkan con `device lost`. min_frames queda por debajo del fotograma del gancho; no lleva [fatal] en log_absent.
+[profiles.renderizador_d3d12_perda]
+description = "CRASH_D3D12_FAIL=removed: el dispositivo Direct3D 12 se pierde de propósito y el juego sale fatal con el motivo"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+renderer = "d3d12"
+env = { CRASH_D3D12_FAIL = "removed", CRASH_NO_HID = "1" }
+expect = { exit = ["fatal"], min_frames = 30, log_absent = ['\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] CRASH_D3D12_FAIL=removed: Direct3D 12 removes the device on purpose', '\[fatal\] .*Direct3D 12: device lost .*DXGI_ERROR_[A-Z_]+ \(0x[0-9A-F]{8}\)'] }
+
 [profiles.renderizador_d3d12_falha_desconhecida]
 description = "CRASH_D3D12_FAIL com um valor desconhecido só avisa no log: o Direct3D 12 liga igual"
 test = true
@@ -204,7 +216,7 @@ userdata_mode = "copy"
 screenshots = [300, 540]
 renderer = "d3d12"
 env = { CRASH_D3D12_FAIL = "foo" }
-expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'fails on purpose'], log_contains = ['\[gpu\] CRASH_D3D12_FAIL=foo ignored \(device \| shaders\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+'] }
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'fails on purpose'], log_contains = ['\[gpu\] CRASH_D3D12_FAIL=foo ignored \(device \| shaders \| removed\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+'] }
 
 # Spec 001, T2 (DXIL): com o Direct3D 12, a camada do port (overlay, avisos) sai sobre preto. O que o log diz (DXIL assinado pelo dxil.dll, os
 # 2 pipelines e os 4 compiles DXIL sem falha, nenhum erro de pipeline) se confere aqui; as capturas se comparam fora (overlay no mesmo lugar
@@ -1355,3 +1367,28 @@ dev_console = [
 ]
 input = [["@hub"], [2.8, "SHOT"], ["@gameplay_ready"], [2, "SHOT"]]
 expect = { exit = ["timeout"], events = ["hub", "level_ready", "gameplay_ready"], log_absent = ['\[fatal\]', '\[crash\]'], log_contains = ['StartLevel \+ SkipToLevel from node 575', 'event level_start .*L1_E3'] }
+
+# Spec 006, T2 (RF-2): CRASH_D3D12_DEVICE sem coincidência só se anota no log e vale a regra do Vulkan (sem software, UMA = integrada, a primeira da maior nota).
+# O nome do adaptador sai igual ao do boot Vulkan; forçar com parte do nome real se confere por revisão de código (006-i).
+[profiles.renderizador_d3d12_adaptador]
+description = "renderer=d3d12 com CRASH_D3D12_DEVICE sem coincidência: o aviso no log e o Direct3D 12 liga igual, na GPU da regra do Vulkan"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+screenshots = [300, 540]
+renderer = "d3d12"
+env = { CRASH_D3D12_DEVICE = "no-such-gpu", CRASH_NO_HID = "1" }
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12: CRASH_D3D12_DEVICE=no-such-gpu matches no adapter; the default rule applies', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+'] }
+
+# Spec 006, T3 (RF-3): com CRASH_GPU_DIAG=1 o Direct3D 12 acrescenta as linhas "diagnostics:" (opcoes, formatos, saidas). A camada de depuracao entra na T4.
+[profiles.renderizador_d3d12_diagnostico]
+description = "renderer=d3d12 com CRASH_GPU_DIAG=1 e CRASH_GPU_DEBUG=selftest: adaptador, nivel e shader model, opcoes, formatos e saidas; camada de depuracao com o aviso da autoprova e a conta final"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+screenshots = [300, 540]
+renderer = "d3d12"
+env = { CRASH_GPU_DIAG = "1", CRASH_GPU_DEBUG = "selftest", CRASH_NO_HID = "1" }
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] Direct3D 12: adapter vendor 0x[0-9A-F]{4} device 0x[0-9A-F]{4}, (discrete|integrated) GPU, \d+ MB dedicated, \d+ MB shared, driver ', '\[gpu\] Direct3D 12: feature level \d+_\d+, highest shader model \d\.\d', '\[gpu\] Direct3D 12: diagnostics: resource binding tier', '\[gpu\] Direct3D 12: diagnostics: formats \(DXGI: S sampled', '\[gpu\] Direct3D 12: diagnostics: output 0: ', '\[gpu\] Direct3D 12: debug layer on', '\[gpu\] Direct3D 12: validation self-test: [1-9]\d* message\(s\) so far', '\[gpu\] Direct3D 12: layer (error|warning): ', '\[gpu\] Direct3D 12: \d+ layer message\(s\)'] }
