@@ -595,6 +595,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         private:
             void CheckDeviceLost(const char* where);
+            void DrainDebugMessages();
             void WaitForFence(uint64_t value);
             void RetireCompleted();
             void CollectGarbage();
@@ -630,6 +631,10 @@ float4 main(uint id : SV_VertexID) : SV_Position
             uint32_t m_failedWidth = 0, m_failedHeight = 0;  // the size ResizeBuffers refused: not tried again until the size changes
             uint32_t m_safe = 0;                              // SafeMode bits (rhi.h)
             int m_presentMode = -1;                           // the last Present's mode (0 V-Sync, 1 tearing, 2 no tearing), to log a change once
+            bool m_debugLayer = false;                        // CRASH_GPU_DEBUG (spec 006 RF-4): the debug layer is on
+            uint64_t m_layerMessages = 0;                     // errors and warnings the layer reported
+            uint32_t m_layerLogged = 0;                       // of those, how many reached the log (at most 200)
+            std::unordered_map<int, uint32_t> m_layerById;    // per message id (at most 3 each)
             bool m_presentFailed = false;                     // a failed Present is logged once
             UINT m_swapFlags = 0;                             // DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING when Windows admits it (creation and ResizeBuffers must agree)
             ComPtr<ID3D12Fence> m_fence;
@@ -700,6 +705,31 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         // Submission ------------------------------------------------------------------------------
 
+        // Spec 006 RF-4: the layer's errors and warnings go to the log (3 per id, 200 in all); all are counted. Called at the end of
+        // Present, after the self-test and before a Fatal.
+        void D3D12Device::DrainDebugMessages()
+        {
+            ComPtr<ID3D12InfoQueue> queue;
+            if (!m_debugLayer || FAILED(m_device.As(&queue)))
+                return;
+            for (UINT64 i = 0, count = queue->GetNumStoredMessages(); i < count; i++)
+            {
+                SIZE_T length = 0;
+                queue->GetMessage(i, nullptr, &length);
+                std::vector<uint8_t> storage(length);
+                auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
+                if (FAILED(queue->GetMessage(i, message, &length)) || message->Severity > D3D12_MESSAGE_SEVERITY_WARNING)
+                    continue;
+                m_layerMessages++;
+                if (m_layerLogged < 200 && ++m_layerById[int(message->ID)] <= 3)
+                {
+                    Log("[gpu] Direct3D 12: layer %s: %s", message->Severity == D3D12_MESSAGE_SEVERITY_WARNING ? "warning" : "error", message->pDescription);
+                    m_layerLogged++;
+                }
+            }
+            queue->ClearStoredMessages();
+        }
+
         // A lost device ends the game with the reason, as Vulkan's `device lost` does (spec 006, RF-1). GetDeviceRemovedReason is S_OK
         // while the device lives, so a call from a failure that was not a loss (a size that does not fit) does nothing.
         void D3D12Device::CheckDeviceLost(const char* where)
@@ -707,6 +737,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             HRESULT reason = m_device->GetDeviceRemovedReason();
             if (reason == S_OK)
                 return;
+            DrainDebugMessages();
             const char* name = reason == DXGI_ERROR_DEVICE_HUNG ? "DXGI_ERROR_DEVICE_HUNG"
                              : reason == DXGI_ERROR_DEVICE_REMOVED ? "DXGI_ERROR_DEVICE_REMOVED"
                              : reason == DXGI_ERROR_DEVICE_RESET ? "DXGI_ERROR_DEVICE_RESET"
@@ -1831,6 +1862,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             QueryPerformanceCounter(&waitEnd);
             m_timing.frameWaitTicks += uint64_t(waitEnd.QuadPart - waitStart.QuadPart);
             RetireCompleted();
+            DrainDebugMessages();
         }
 
         // Timestamps ------------------------------------------------------------------------------
@@ -1918,6 +1950,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         void D3D12Device::LogStats()
         {
+            DrainDebugMessages();
+            if (m_debugLayer)
+                Log("[gpu] Direct3D 12: %llu layer message(s)", (unsigned long long)m_layerMessages);
             Log("[gpu] d3d12: %llu submits, %llu pass pipelines, %llu draw pipelines, %llu DXIL compiles (%llu failed)", (unsigned long long)m_stats.submits,
                 (unsigned long long)m_stats.passPipelines, (unsigned long long)m_stats.drawPipelines, (unsigned long long)m_stats.dxilCompiles,
                 (unsigned long long)m_stats.dxilFailures);
@@ -2012,8 +2047,22 @@ float4 main(uint id : SV_VertexID) : SV_Position
             // CRASH_D3D12_FAIL=shaders falls back to Vulkan: no DXIL cache is created or touched.
             m_dxilCache = m_failShaders ? std::filesystem::path() : DxilCacheFolder(info.shaderCache);
             NoteShaderCompilation(info.shaderCompilation);
-            // No debug layer (spec 004): info.debug is a Vulkan switch for now.
-            if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&m_factory))) || !ChooseAdapter())
+            // Spec 006 RF-4: only CRASH_GPU_DEBUG turns the layer on (info.debug is Vulkan's: gpu_diagnostics can set it). Before the
+            // factory and the devices, or they are made without it. Not installed: one line and on without it.
+            const char* debugEnv = getenv("CRASH_GPU_DEBUG");
+            if (debugEnv && *debugEnv)
+            {
+                ComPtr<ID3D12Debug> debug;
+                if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+                {
+                    debug->EnableDebugLayer();
+                    m_debugLayer = true;
+                    Log("[gpu] Direct3D 12: debug layer on");
+                }
+                else
+                    Log("[gpu] Direct3D 12: CRASH_GPU_DEBUG asks for the debug layer, which is not installed (Windows Graphics Tools); going on without it");
+            }
+            if (FAILED(CreateDXGIFactory2(m_debugLayer ? DXGI_CREATE_FACTORY_DEBUG : 0, IID_PPV_ARGS(&m_factory))) || !ChooseAdapter())
             {
                 Log("[gpu] Direct3D 12: no hardware adapter with feature level 11_0");
                 return false;
@@ -2184,6 +2233,16 @@ float4 main(uint id : SV_VertexID) : SV_Position
                     m_queryHeap.Reset();
                     m_timestampFrequency = 0;
                 }
+            }
+            // CRASH_GPU_DEBUG=selftest: a call the layer must report (a buffer of size 0, nothing is created), like Vulkan's, so a clean run
+            // proves the messages reach the log.
+            if (m_debugLayer && strstr(debugEnv, "selftest"))
+            {
+                D3D12_RESOURCE_DESC empty{ D3D12_RESOURCE_DIMENSION_BUFFER, 0, 0, 1, 1, 1, DXGI_FORMAT_UNKNOWN, { 1, 0 }, D3D12_TEXTURE_LAYOUT_ROW_MAJOR };
+                ComPtr<ID3D12Resource> none;
+                m_device->CreateCommittedResource(&readbackHeap, D3D12_HEAP_FLAG_NONE, &empty, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&none));
+                DrainDebugMessages();
+                Log("[gpu] Direct3D 12: validation self-test: %llu message(s) so far", (unsigned long long)m_layerMessages);
             }
             LogDiagnostics(info.diagnostics);
             return true;

@@ -1383,12 +1383,12 @@ expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[c
 
 # Spec 006, T3 (RF-3): com CRASH_GPU_DIAG=1 o Direct3D 12 acrescenta as linhas "diagnostics:" (opcoes, formatos, saidas). A camada de depuracao entra na T4.
 [profiles.renderizador_d3d12_diagnostico]
-description = "renderer=d3d12 com CRASH_GPU_DIAG=1: adaptador, nivel e shader model, mais opcoes do dispositivo, formatos e saidas"
+description = "renderer=d3d12 com CRASH_GPU_DIAG=1 e CRASH_GPU_DEBUG=selftest: adaptador, nivel e shader model, opcoes, formatos e saidas; camada de depuracao com o aviso da autoprova e a conta final"
 test = true
 timeout = 20
 audio = false
 userdata_mode = "copy"
 screenshots = [300, 540]
 renderer = "d3d12"
-env = { CRASH_GPU_DIAG = "1", CRASH_NO_HID = "1" }
-expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] Direct3D 12: adapter vendor 0x[0-9A-F]{4} device 0x[0-9A-F]{4}, (discrete|integrated) GPU, \d+ MB dedicated, \d+ MB shared, driver ', '\[gpu\] Direct3D 12: feature level \d+_\d+, highest shader model \d\.\d', '\[gpu\] Direct3D 12: diagnostics: resource binding tier', '\[gpu\] Direct3D 12: diagnostics: formats \(DXGI: S sampled', '\[gpu\] Direct3D 12: diagnostics: output 0: '] }
+env = { CRASH_GPU_DIAG = "1", CRASH_GPU_DEBUG = "selftest", CRASH_NO_HID = "1" }
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] Direct3D 12: adapter vendor 0x[0-9A-F]{4} device 0x[0-9A-F]{4}, (discrete|integrated) GPU, \d+ MB dedicated, \d+ MB shared, driver ', '\[gpu\] Direct3D 12: feature level \d+_\d+, highest shader model \d\.\d', '\[gpu\] Direct3D 12: diagnostics: resource binding tier', '\[gpu\] Direct3D 12: diagnostics: formats \(DXGI: S sampled', '\[gpu\] Direct3D 12: diagnostics: output 0: ', '\[gpu\] Direct3D 12: debug layer on', '\[gpu\] Direct3D 12: validation self-test: [1-9]\d* message\(s\) so far', '\[gpu\] Direct3D 12: layer (error|warning): ', '\[gpu\] Direct3D 12: \d+ layer message\(s\)'] }
