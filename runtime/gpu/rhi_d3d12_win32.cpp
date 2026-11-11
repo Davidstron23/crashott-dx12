@@ -610,6 +610,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             D3D12_CPU_DESCRIPTOR_HANDLE Dsv(D3D12Texture* texture);
             void ReleaseDescriptors(D3D12Texture* texture);
             void LogSwapChain();
+            void LogDiagnostics(bool diagnostics);
 
             std::string m_adapterName;
             ComPtr<IDXGIAdapter1> m_adapter;     // the chosen adapter, kept for the diagnostics (spec 006, T3)
@@ -1639,6 +1640,97 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 (m_safe & SAFE_PRESENT) ? "sequential" : "discard", m_swapFlags ? "tearing allowed" : "no tearing");
         }
 
+        // Spec 006 RF-3, after the Vulkan LogDiagnostics: always the adapter, the feature level and the shader model; with
+        // [video] gpu_diagnostics or CRASH_GPU_DIAG (info.diagnostics) also the options, the formats and the outputs. A query that
+        // fails leaves its data out and never stops the start.
+        void D3D12Device::LogDiagnostics(bool diagnostics)
+        {
+            D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
+            m_device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture));
+            LARGE_INTEGER driver{};
+            char driverText[48] = "unknown";
+            if (SUCCEEDED(m_adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &driver)))
+                snprintf(driverText, sizeof(driverText), "%u.%u.%u.%u", unsigned(HIWORD(driver.HighPart)), unsigned(LOWORD(driver.HighPart)),
+                         unsigned(HIWORD(driver.LowPart)), unsigned(LOWORD(driver.LowPart)));
+            Log("[gpu] Direct3D 12: adapter vendor 0x%04X device 0x%04X, %s GPU, %llu MB dedicated, %llu MB shared, driver %s", m_adapterDesc.VendorId,
+                m_adapterDesc.DeviceId, architecture.UMA ? "integrated" : "discrete", (unsigned long long)(m_adapterDesc.DedicatedVideoMemory >> 20),
+                (unsigned long long)(m_adapterDesc.SharedSystemMemory >> 20), driverText);
+            // The feature level and the shader model are asked apart from the 6.0 gate of Init: a runtime that does not know 6.7
+            // answers E_INVALIDARG, so ask from 6.7 down.
+            static const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_12_2, D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_11_1,
+                                                        D3D_FEATURE_LEVEL_11_0 };
+            D3D12_FEATURE_DATA_FEATURE_LEVELS featureLevels{ UINT(std::size(levels)), levels };
+            char level[16] = "unknown", model[16] = "unknown";
+            if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &featureLevels, sizeof(featureLevels))))
+                snprintf(level, sizeof(level), "%d_%d", int(featureLevels.MaxSupportedFeatureLevel >> 12) & 0xF,
+                         int(featureLevels.MaxSupportedFeatureLevel >> 8) & 0xF);
+            for (int version = 0x67; version >= 0x60; version--)
+            {
+                D3D12_FEATURE_DATA_SHADER_MODEL shaderModel{ D3D_SHADER_MODEL(version) };
+                if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &shaderModel, sizeof(shaderModel))))
+                {
+                    snprintf(model, sizeof(model), "%d.%d", int(shaderModel.HighestShaderModel) >> 4, int(shaderModel.HighestShaderModel) & 0xF);
+                    break;
+                }
+            }
+            Log("[gpu] Direct3D 12: feature level %s, highest shader model %s", level, model);
+            if (!diagnostics)
+                return;
+
+            D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
+            D3D12_FEATURE_DATA_D3D12_OPTIONS1 waves{};
+            D3D12_FEATURE_DATA_D3D12_OPTIONS12 barriers{};
+            if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options))))
+                Log("[gpu] Direct3D 12: diagnostics: resource binding tier %d, tiled resources tier %d, ROV %d, typed UAV loads of more formats %d, "
+                    "conservative rasterization tier %d",
+                    int(options.ResourceBindingTier), int(options.TiledResourcesTier), int(options.ROVsSupported), int(options.TypedUAVLoadAdditionalFormats),
+                    int(options.ConservativeRasterizationTier));
+            if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &waves, sizeof(waves))))
+                Log("[gpu] Direct3D 12: diagnostics: wave ops %d (lanes %u-%u)", int(waves.WaveOps), waves.WaveLaneCountMin, waves.WaveLaneCountMax);
+            if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS12, &barriers, sizeof(barriers))))
+                Log("[gpu] Direct3D 12: diagnostics: enhanced barriers %d", int(barriers.EnhancedBarriersSupported));
+            // The formats the renderer uses (the list of the Vulkan backend). S sampled, C color, B blend, D depth/stencil, U typed UAV;
+            // no L (linear filter) or T (transfer): Direct3D 12 has no format flag for them.
+            static const DXGI_FORMAT formatList[] = {
+                DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
+                DXGI_FORMAT_R11G11B10_FLOAT, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R16_FLOAT,
+                DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC2_UNORM,
+                DXGI_FORMAT_BC3_UNORM, DXGI_FORMAT_BC4_UNORM, DXGI_FORMAT_BC5_UNORM, DXGI_FORMAT_BC7_UNORM, DXGI_FORMAT_D24_UNORM_S8_UINT,
+                DXGI_FORMAT_D32_FLOAT_S8X24_UINT,
+            };
+            std::string formats;
+            for (DXGI_FORMAT format : formatList)
+            {
+                D3D12_FEATURE_DATA_FORMAT_SUPPORT support{ format };
+                if (FAILED(m_device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))))
+                    continue;
+                D3D12_FORMAT_SUPPORT1 f = support.Support1;
+                char text[40];
+                snprintf(text, sizeof(text), "%s%u:%s%s%s%s%s", formats.empty() ? "" : " ", uint32_t(format), (f & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE) ? "S" : "",
+                         (f & D3D12_FORMAT_SUPPORT1_RENDER_TARGET) ? "C" : "", (f & D3D12_FORMAT_SUPPORT1_BLENDABLE) ? "B" : "",
+                         (f & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL) ? "D" : "", (f & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) ? "U" : "");
+                formats += text;
+            }
+            Log("[gpu] Direct3D 12: diagnostics: formats (DXGI: S sampled, C color, B blend, D depth, U storage): %s", formats.c_str());
+            for (UINT i = 0; ; i++)
+            {
+                ComPtr<IDXGIOutput> output;
+                if (FAILED(m_adapter->EnumOutputs(i, &output)))  // NOT_FOUND ends the list; any other failure too (no endless loop)
+                    break;
+                DXGI_OUTPUT_DESC desc{};
+                if (!output || FAILED(output->GetDesc(&desc)))
+                    continue;
+                ComPtr<IDXGIOutput6> output6;
+                DXGI_OUTPUT_DESC1 desc1{};
+                bool color = SUCCEEDED(output.As(&output6)) && SUCCEEDED(output6->GetDesc1(&desc1));
+                Log("[gpu] Direct3D 12: diagnostics: output %u: %s, %ldx%ld at %ld,%ld, rotation %d, %u bits per color, color space %d", i,
+                    plat::NarrowUtf8(desc.DeviceName).c_str(), desc.DesktopCoordinates.right - desc.DesktopCoordinates.left,
+                    desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top, desc.DesktopCoordinates.left, desc.DesktopCoordinates.top, int(desc.Rotation),
+                    color ? desc1.BitsPerColor : 0, color ? int(desc1.ColorSpace) : -1);
+            }
+        }
+
         void D3D12Device::CreateBackBuffers()
         {
             for (uint32_t i = 0; i < BACK_BUFFER_COUNT; i++)
@@ -2093,6 +2185,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
                     m_timestampFrequency = 0;
                 }
             }
+            LogDiagnostics(info.diagnostics);
             return true;
         }
     }
