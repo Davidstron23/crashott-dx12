@@ -84,7 +84,8 @@ BUTTONS = DIGITAL | {
     # Analog sticks at full deflection (script only): LS_* walk, RS_* turn the camera.
     "LS_LEFT", "LS_RIGHT", "LS_UP", "LS_DOWN", "RS_LEFT", "RS_RIGHT", "RS_UP", "RS_DOWN"}
 STICKS = {"LS", "RS"}      # [t, "LS", x, y] (-1..1)
-ACTIONS = {"SHOT"}         # [t, "SHOT"]: a screenshot
+ACTIONS = {"SHOT", "ALT_ENTER"}  # [t, "SHOT"]: a screenshot; [t, "ALT_ENTER"]: a whole Alt+Enter on the game's window
+WINDOW = {"WINSIZE"}       # [t, "WINSIZE", w, h]: the client area of the game's window, without moving or activating it
 MOUSE = {"MOUSE", "CLICK", "RCLICK", "LDOWN", "LUP"}  # [t, "CLICK", x, y]: the cursor at (x, y) of the 1280x720 image (+ a click;
 # LDOWN / LUP press / release the left button there, for drags)
 WHEEL = {"WHEEL"}          # [t, "WHEEL", n]: n notches of the mouse wheel (+ = up)
@@ -192,7 +193,7 @@ def input_script(presses):
         player = ""
         if re.fullmatch(r"P[2-4]_.+", button) and button[3:] in BUTTONS | STICKS | TRIGGERS:
             player, button = button[:3], button[3:]
-        values = 2 if button in STICKS or button in MOUSE else 1 if button in TRIGGERS or button in WHEEL else 0
+        values = 2 if button in STICKS or button in MOUSE or button in WINDOW else 1 if button in TRIGGERS or button in WHEEL else 0
         # KEY_<name>: a keyboard key or mouse button (settings/controls.h names: KEY_W, KEY_SPACE,
         # KEY_MOUSE1...), through the [controls] bindings like the real keyboard.
         # DEVICE_XBOX / DEVICE_PLAYSTATION / DEVICE_KEYBOARD: that device counts as the last one
@@ -616,6 +617,19 @@ def check(settings, exit_name, text, frames, screenshots, perf, restarts=0, seco
     return results
 
 
+def off_desktop_monitor():
+    """CRASH_WINDOW_MONITOR for --background: a rectangle of the primary monitor's size just left of the virtual desktop,
+    so a borderless or fullscreen game window never covers the screen."""
+    user32 = ctypes.WinDLL("user32")
+    user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    previous = user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))  # real pixels, as the game's
+    width, height = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+    left, top = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)
+    user32.SetThreadDpiAwarenessContext(previous)
+    return f"{left - width},{top},{width},{height}"
+
+
 def keep_window_away(pid, stop_event):
     """Until stop_event is set, push the visible top-level windows of `pid` off the desktop, to the bottom of the Z order.
 
@@ -709,6 +723,8 @@ def run_profile(config, name, overrides, do_build, dist=False, background=False)
                 "--languages", str(resolve(paths.get("languages", "languages"))),
                 "--data", str(resolve(paths.get("data", "private")))]
     env = environment(settings, run_dir, name)
+    if background:
+        env.setdefault("CRASH_WINDOW_MONITOR", off_desktop_monitor())
     (run_dir / "settings.json").write_text(json.dumps(
         {"profile": name, "settings": {k: v for k, v in settings.items() if not k.startswith("_")}, "args": args,
          "env": {k: v for k, v in env.items() if k.startswith("CRASH_")}}, indent=2, ensure_ascii=False),

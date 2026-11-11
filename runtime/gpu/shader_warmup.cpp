@@ -96,13 +96,19 @@ namespace gpu::warmup
         // The renderer's translation (PrepareShader in xenos_renderer.cpp, without the user's
         // shaderoverride files) for one variant, compiled into the cache unless it is there; then
         // `device`, if any, prepares its pipeline part.
-        bool Compile(const Source& source, bool scaled, const std::filesystem::path& shaderCache, rhi::Device* device)
+        bool Compile(const Source& source, bool scaled, const std::filesystem::path& shaderCache, rhi::Device* device, bool dxil)
         {
             TranslatedShader info = TranslateShader(source.stage, source.ucode.data(), uint32_t(source.ucode.size()), scaled);
             graphics::PatchShader(source.stage, source.hash, info.hlsl);
             std::string name = Name(source.stage, source.hash) + (scaled ? " (scaled)" : "");
             rhi::Stage stage = source.stage == ShaderStage::Pixel ? rhi::Stage::Pixel : rhi::Stage::Vertex;
+#ifdef _WIN32
+            // Same HLSL and stage as the renderer's CreateShader, so the same DXIL cache key.
+            if (dxil ? !rhi::TestCompileDxil(stage, info.hlsl, name.c_str(), shaderCache)
+                     : !rhi::TestCompile(stage, info.hlsl, name.c_str(), rhi::Layout::Draw, shaderCache))
+#else
             if (!rhi::TestCompile(stage, info.hlsl, name.c_str(), rhi::Layout::Draw, shaderCache))
+#endif
                 return false;
             if (device)
                 device->PrewarmShader(stage, info.hlsl);
@@ -112,7 +118,7 @@ namespace gpu::warmup
         // Every source in both variants, on `threads` threads (the variant in use first, given to
         // `device`). Returns the failures.
         int CompileAll(const std::vector<Source>& sources, const std::filesystem::path& shaderCache, uint32_t threads, plat::ThreadPriority priority,
-                       rhi::Device* device = nullptr, bool scaled = false)
+                       rhi::Device* device = nullptr, bool scaled = false, bool dxil = false)
         {
             std::atomic<size_t> next{ 0 };
             std::atomic<int> failures{ 0 };
@@ -123,7 +129,7 @@ namespace gpu::warmup
                 {
                     bool inUse = job < sources.size();
                     bool variant = inUse ? scaled : !scaled;
-                    if (!Compile(sources[job % sources.size()], variant, shaderCache, inUse ? device : nullptr))
+                    if (!Compile(sources[job % sources.size()], variant, shaderCache, inUse ? device : nullptr, dxil))
                         failures++;
                 }
             };
@@ -179,13 +185,13 @@ namespace gpu::warmup
         std::filesystem::rename(temporary, path, error);
     }
 
-    void StartBackground(const std::filesystem::path& shaderCache, rhi::Device* device, bool scaled)
+    void StartBackground(const std::filesystem::path& shaderCache, rhi::Device* device, bool scaled, bool dxil)
     {
-        std::thread([shaderCache, device, scaled] {
+        std::thread([shaderCache, device, scaled, dxil] {
             plat::SetCurrentThreadName("shader warm-up");
             auto start = std::chrono::steady_clock::now();
             std::vector<Source> sources = Sources(shaderCache);
-            int failures = CompileAll(sources, shaderCache, 1, plat::ThreadPriority::Lowest, device, scaled);
+            int failures = CompileAll(sources, shaderCache, 1, plat::ThreadPriority::Lowest, device, scaled, dxil);
             Log("[gpu] shader warm-up: %zu shaders x 2 variants checked in %.0f ms (%d failed)", sources.size(),
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), failures);
         }).detach();

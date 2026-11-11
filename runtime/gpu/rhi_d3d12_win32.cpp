@@ -290,10 +290,12 @@ float4 main(uint id : SV_VertexID) : SV_Position
         // HLSL -> DXIL ------------------------------------------------------------------------------
 
         // dxcompiler.dll, loaded at run time (as rhi_vulkan_shaders.cpp does for SPIR-V). DXC's objects are not
-        // thread-safe: one compiler, one lock (the passes are few and compile at start-up).
+        // thread-safe: one compiler per thread (as rhi_vulkan_shaders.cpp), so the
+        // warm-up thread never makes the recording thread wait. g_dxc is the loading thread's, used for the fingerprint.
         std::once_flag g_dxcOnce;
+        DxcCreateInstanceProc g_dxcCreate = nullptr;
         IDxcCompiler3* g_dxc = nullptr;
-        std::mutex g_dxcMutex;
+        thread_local IDxcCompiler3* t_dxc = nullptr;
 
         void ComputeDxcFingerprint();
 
@@ -312,6 +314,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 g_dxc = nullptr;
                 return;
             }
+            g_dxcCreate = create;
+            t_dxc = g_dxc;
             ComputeDxcFingerprint();
         }
 
@@ -352,11 +356,14 @@ float4 main(uint id : SV_VertexID) : SV_Position
             const wchar_t* arguments[2 + std::size(DXC_ARGUMENTS)] = { L"-T", profile };
             std::copy(std::begin(DXC_ARGUMENTS), std::end(DXC_ARGUMENTS), arguments + 2);
             DxcBuffer source{ hlsl.data(), hlsl.size(), DXC_CP_UTF8 };
-            std::lock_guard<std::mutex> lock(g_dxcMutex);
+            if (!t_dxc && FAILED(g_dxcCreate(CLSID_DxcCompiler, __uuidof(IDxcCompiler3), reinterpret_cast<void**>(&t_dxc))))
+                t_dxc = nullptr;
+            if (!t_dxc)
+                return false;
             IDxcResult* result = nullptr;
             if (compiles)
                 (*compiles)++;
-            HRESULT status = g_dxc->Compile(&source, arguments, uint32_t(std::size(arguments)), nullptr, __uuidof(IDxcResult),
+            HRESULT status = t_dxc->Compile(&source, arguments, uint32_t(std::size(arguments)), nullptr, __uuidof(IDxcResult),
                                             reinterpret_cast<void**>(&result));
             if (SUCCEEDED(status) && result)
                 result->GetStatus(&status);
@@ -598,6 +605,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             D3D12_CPU_DESCRIPTOR_HANDLE Rtv(D3D12Texture* texture);
             D3D12_CPU_DESCRIPTOR_HANDLE Dsv(D3D12Texture* texture);
             void ReleaseDescriptors(D3D12Texture* texture);
+            void LogSwapChain();
 
             std::string m_adapterName;
             std::filesystem::path m_shaderCache;      // userdata\shadercache: only the failed HLSL goes near it (shaderdump\)
@@ -611,6 +619,11 @@ float4 main(uint id : SV_VertexID) : SV_Position
             ComPtr<IDXGISwapChain3> m_swapChain;
             D3D12Texture m_backBuffers[BACK_BUFFER_COUNT];
             uint32_t m_backBufferWidth = 1280, m_backBufferHeight = 720;
+            uint32_t m_failedWidth = 0, m_failedHeight = 0;  // the size ResizeBuffers refused: not tried again until the size changes
+            uint32_t m_safe = 0;                              // SafeMode bits (rhi.h)
+            int m_presentMode = -1;                           // the last Present's mode (0 V-Sync, 1 tearing, 2 no tearing), to log a change once
+            bool m_presentFailed = false;                     // a failed Present is logged once
+            UINT m_swapFlags = 0;                             // DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING when Windows admits it (creation and ResizeBuffers must agree)
             ComPtr<ID3D12Fence> m_fence;
             uint64_t m_fenceValue = 0;
             HANDLE m_fenceEvent = nullptr;
@@ -816,7 +829,10 @@ float4 main(uint id : SV_VertexID) : SV_Position
             barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             barrier.Transition.StateBefore = texture->state;
             barrier.Transition.StateAfter = state;
-            m_list->ResourceBarrier(1, &barrier);
+            // Safe mode "barriers": a global UAV barrier (every earlier write) with each transition.
+            D3D12_RESOURCE_BARRIER barriers[2] = { barrier, {} };
+            barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            m_list->ResourceBarrier((m_safe & SAFE_BARRIERS) ? 2 : 1, barriers);
             texture->state = state;
         }
 
@@ -1066,12 +1082,22 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         // Shaders, draw pipelines and draws ---------------------------------------------------------
 
-        // The recording thread is the only caller (the warm-up is off with Direct3D 12), so m_shaders needs no lock.
+        // The recording thread is the only caller (the warm-up only fills the disk cache), so m_shaders needs no lock.
         Shader* D3D12Device::CreateShader(Stage stage, const std::string& hlsl, const char* name, Layout)
         {
             auto shader = std::make_unique<D3D12Shader>();
-            if (!CompileDxil(stage, hlsl, name, m_shaderCache, m_dxilCache, shader->code, &m_stats.shaderCompiles, &m_stats.shaderFailures,
-                             &m_stats.shaderCached))
+            uint64_t compiles = m_stats.shaderCompiles;
+            LARGE_INTEGER start, end;
+            QueryPerformanceCounter(&start);
+            bool compiled = CompileDxil(stage, hlsl, name, m_shaderCache, m_dxilCache, shader->code, &m_stats.shaderCompiles, &m_stats.shaderFailures,
+                                        &m_stats.shaderCached);
+            QueryPerformanceCounter(&end);
+            if (m_stats.shaderCompiles != compiles)  // not from the disk cache: RF-8 counts it
+            {
+                m_timing.shaders++;
+                m_timing.shaderTicks += uint64_t(end.QuadPart - start.QuadPart);
+            }
+            if (!compiled)
             {
                 // RF-7 (the renderer asks once per shader: it remembers the failure). DXC's message is in the line before.
                 Log("[gpu] Direct3D 12: shader %s does not compile to DXIL: what uses it is not drawn", name);
@@ -1292,7 +1318,12 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 for (uint32_t i = 0; i < key.colorCount; i++)
                     desc.RTVFormats[i] = DXGI_FORMAT(key.colorFormats[i]);
                 desc.SampleDesc.Count = 1;
+                LARGE_INTEGER start, end;
+                QueryPerformanceCounter(&start);
                 HRESULT result = m_device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline->state));
+                QueryPerformanceCounter(&end);
+                m_timing.pipelines++;  // RF-8: the recording thread compiles it
+                m_timing.pipelineTicks += uint64_t(end.QuadPart - start.QuadPart);
                 if (FAILED(result))
                 {
                     // RF-7: once per shader, however many pipelines it is in.
@@ -1465,6 +1496,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
             }
 
             std::vector<uint8_t> vsCode, psCode;
+            LARGE_INTEGER start, end;
+            QueryPerformanceCounter(&start);
+            uint64_t dxilBefore = m_stats.dxilCompiles;
             if (desc.vs.empty())
                 vsCode = m_fullscreenVs;
             else if (!CompileDxil(Stage::Vertex, desc.vs, (desc.name + "_vs").c_str(), m_shaderCache, m_dxilCache, vsCode, &m_stats.dxilCompiles,
@@ -1505,6 +1539,10 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 Log("[gpu] %s: could not create the pipeline (0x%08X)", desc.name.c_str(), unsigned(created));
                 return nullptr;
             }
+            QueryPerformanceCounter(&end);
+            m_timing.pipelines++;  // RF-8 (the DXIL it compiled counts as shaders)
+            m_timing.pipelineTicks += uint64_t(end.QuadPart - start.QuadPart);
+            m_timing.shaders += uint32_t(m_stats.dxilCompiles - dxilBefore);
             m_stats.passPipelines++;
             m_passPipelines.push_back(std::move(pipeline));
             return m_passPipelines.back().get();
@@ -1567,6 +1605,12 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         // Presentation ----------------------------------------------------------------------------
 
+        void D3D12Device::LogSwapChain()
+        {
+            Log("[gpu] Direct3D 12: swap chain %ux%u, %u buffers, flip %s, %s", m_backBufferWidth, m_backBufferHeight, BACK_BUFFER_COUNT,
+                (m_safe & SAFE_PRESENT) ? "sequential" : "discard", m_swapFlags ? "tearing allowed" : "no tearing");
+        }
+
         void D3D12Device::CreateBackBuffers()
         {
             for (uint32_t i = 0; i < BACK_BUFFER_COUNT; i++)
@@ -1587,19 +1631,31 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         bool D3D12Device::Resize(uint32_t width, uint32_t height)
         {
-            if (!width || !height || (width == m_backBufferWidth && height == m_backBufferHeight))
+            if (!width || !height || (width == m_backBufferWidth && height == m_backBufferHeight) ||
+                (width == m_failedWidth && height == m_failedHeight))
                 return false;
             WaitIdle();
             // The swap chain can only be resized once every reference to its buffers is gone.
             for (auto& buffer : m_backBuffers)
                 buffer.resource.Reset();
-            if (SUCCEEDED(m_swapChain->ResizeBuffers(BACK_BUFFER_COUNT, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0)))
+            HRESULT result = m_swapChain->ResizeBuffers(BACK_BUFFER_COUNT, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, m_swapFlags);
+            if (SUCCEEDED(result))
             {
                 m_backBufferWidth = width;
                 m_backBufferHeight = height;
+                m_failedWidth = m_failedHeight = 0;
+                LogSwapChain();
+            }
+            else
+            {
+                // Keep the old size (the buffers are taken again below) and do not retry this size every frame.
+                m_failedWidth = width;
+                m_failedHeight = height;
+                Log("[gpu] Direct3D 12: could not resize the swap chain to %ux%u (0x%08X): keeping %ux%u", width, height, unsigned(result),
+                    m_backBufferWidth, m_backBufferHeight);
             }
             CreateBackBuffers();
-            return true;
+            return SUCCEEDED(result);
         }
 
         void D3D12Device::Present(bool vsync)
@@ -1610,17 +1666,31 @@ float4 main(uint id : SV_VertexID) : SV_Position
             QueryPerformanceCounter(&submitStart);
             Submit();
             QueryPerformanceCounter(&submitEnd);
-            // No tearing and no exclusive fullscreen (spec 004): V-Sync off just means Present(0).
-            m_swapChain->Present(vsync ? 1 : 0, 0);
+            // V-Sync: wait for the refresh. Without it Present(0), with tearing when the swap chain was made for it (RF-4); the
+            // choice is per call, so a V-Sync change in SETTINGS counts on the next frame.
+            bool tearing = !vsync && (m_swapFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);
+            int mode = vsync ? 0 : tearing ? 1 : 2;
+            if (mode != m_presentMode)
+            {
+                m_presentMode = mode;
+                Log("[gpu] Direct3D 12: presenting %s", mode == 0 ? "with V-Sync" : mode == 1 ? "without V-Sync, with tearing" : "without V-Sync, no tearing");
+            }
+            HRESULT presented = m_swapChain->Present(vsync ? 1 : 0, tearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+            if (FAILED(presented) && !m_presentFailed)
+            {
+                m_presentFailed = true;  // device loss is the next spec's
+                Log("[gpu] Direct3D 12: Present failed (0x%08X)", unsigned(presented));
+            }
             QueryPerformanceCounter(&presentEnd);
             m_timing.submitTicks += uint64_t(submitEnd.QuadPart - submitStart.QuadPart);
             m_timing.presentTicks = std::max(m_timing.presentTicks, uint64_t(presentEnd.QuadPart - submitEnd.QuadPart));
 
-            // At most two frames in flight.
+            // At most two frames in flight (RF-5; by code review: the loop below waits for the oldest fence as soon as a third is
+            // queued). The safe mode's "serial" waits for this one too.
             m_frameFences.push_back(m_fenceValue);
             LARGE_INTEGER waitStart, waitEnd;
             QueryPerformanceCounter(&waitStart);
-            while (m_frameFences.size() > 2)
+            while (m_frameFences.size() > ((m_safe & SAFE_SERIAL) ? 0u : 2u))
             {
                 WaitForFence(m_frameFences.front());
                 m_frameFences.pop_front();
@@ -1734,6 +1804,14 @@ float4 main(uint id : SV_VertexID) : SV_Position
         bool D3D12Device::Init(const DeviceInfo& info)
         {
             m_hwnd = HWND(info.window);
+            m_safe = info.safeMode;
+            // RF-6: what D3D12 has no equivalent for is logged, never an error.
+            if (m_safe)
+            {
+                const uint32_t applies = SAFE_BARRIERS | SAFE_SERIAL | SAFE_PRESENT;
+                Log("[gpu] Direct3D 12: GPU safe mode: applied %s; no effect here (no equivalent) %s", SafeModeNames(m_safe & applies).c_str(),
+                    SafeModeNames(m_safe & ~applies).c_str());
+            }
             m_shaderCache = info.shaderCache;
             // CRASH_D3D12_FAIL=shaders falls back to Vulkan: no DXIL cache is created or touched.
             m_dxilCache = m_failShaders ? std::filesystem::path() : DxilCacheFolder(info.shaderCache);
@@ -1882,7 +1960,16 @@ float4 main(uint id : SV_VertexID) : SV_Position
             swapDesc.SampleDesc.Count = 1;
             swapDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
             swapDesc.BufferCount = BACK_BUFFER_COUNT;
-            swapDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+            swapDesc.SwapEffect = (m_safe & SAFE_PRESENT) ? DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL : DXGI_SWAP_EFFECT_FLIP_DISCARD;
+            ComPtr<IDXGIFactory5> factory5;
+            BOOL tearing = FALSE;
+            if (SUCCEEDED(m_factory.As(&factory5)) &&
+                FAILED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof(tearing))))
+                tearing = FALSE;
+            if (m_safe & SAFE_PRESENT)
+                tearing = FALSE;  // safe mode "present": no tearing, sequential flip
+            m_swapFlags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+            swapDesc.Flags = m_swapFlags;
             ComPtr<IDXGISwapChain1> swapChain;
             if (FAILED(m_factory->CreateSwapChainForHwnd(m_queue.Get(), m_hwnd, &swapDesc, nullptr, nullptr, &swapChain)) ||
                 FAILED(swapChain.As(&m_swapChain)))
@@ -1894,6 +1981,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             m_backBufferWidth = info.width;
             m_backBufferHeight = info.height;
             CreateBackBuffers();
+            LogSwapChain();
 
             // Timestamps: without them TimestampFrequency() stays 0 and the callers skip their timing.
             D3D12_QUERY_HEAP_DESC queryDesc{ D3D12_QUERY_HEAP_TYPE_TIMESTAMP, TIMESTAMPS, 0 };

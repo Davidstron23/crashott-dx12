@@ -39,6 +39,7 @@ namespace gpu::window
         std::atomic<settings::WindowMode> g_mode{ settings::WindowMode::Windowed };
         RECT g_windowedRect{};  // the framed window's position before leaving windowed mode
         constexpr UINT WM_APP_SET_MODE = WM_APP + 1;
+        constexpr UINT WM_APP_SET_CLIENT = WM_APP + 2;  // wParam x lParam: the client area (test hook)
         constexpr UINT_PTR CURSOR_TIMER = 1;
         bool g_cursorClipped = false;
         input::pc::CursorMode g_cursorMode = input::pc::CursorMode::Visible;
@@ -47,6 +48,19 @@ namespace gpu::window
         std::wstring InstanceTitle(const wchar_t* title)
         {
             return title + plat::WidenUtf8(InstanceTitleSuffix());
+        }
+
+        // CRASH_WINDOW_MONITOR=x,y,w,h (tests): borderless and fullscreen cover this rectangle instead of the monitor,
+        // e.g. one outside the desktop. Unset, nothing changes.
+        bool MonitorOverride(RECT& r)
+        {
+            int x, y, w, h;
+            const char* text = getenv("CRASH_WINDOW_MONITOR");
+            if (!text || sscanf(text, "%d,%d,%d,%d", &x, &y, &w, &h) != 4 || w < 160 || h < 120)
+                return false;
+            r = { x, y, x + w, y + h };
+            Log("[gpu] window: CRASH_WINDOW_MONITOR %d,%d %dx%d", x, y, w, h);
+            return true;
         }
 
         void ApplyMode(HWND hwnd, settings::WindowMode mode)
@@ -64,9 +78,13 @@ namespace gpu::window
             }
             if (framed)
                 GetWindowRect(hwnd, &g_windowedRect);
-            MONITORINFO monitor{ sizeof(monitor) };
-            GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor);
-            const RECT& r = monitor.rcMonitor;
+            RECT r;
+            if (!MonitorOverride(r))
+            {
+                MONITORINFO monitor{ sizeof(monitor) };
+                GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor);
+                r = monitor.rcMonitor;
+            }
             SetWindowLongPtrW(hwnd, GWL_STYLE, (style & ~WINDOWED_STYLE) | WS_POPUP | WS_VISIBLE);
             SetWindowPos(hwnd, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_NOACTIVATE);
         }
@@ -190,6 +208,8 @@ namespace gpu::window
                 input::pc::OnKey(KeyOf(wParam, lParam), false);
                 return 0;
             case WM_SYSKEYUP:
+                if (wParam == VK_RETURN && (lParam & (1 << 29)))
+                    return 0;  // the end of Alt+Enter: the game never saw its key down (an Enter would be A in the menus)
                 input::pc::OnKey(KeyOf(wParam, lParam), false);
                 // Alt or F10 alone would open the (absent) window menu and stall the message loop.
                 if (wParam == VK_MENU || wParam == VK_F10)
@@ -238,19 +258,27 @@ namespace gpu::window
             case WM_APP_SET_MODE:
                 ApplyMode(hwnd, settings::WindowMode(wParam));
                 return 0;
+            case WM_APP_SET_CLIENT:
+            {
+                RECT r{ 0, 0, LONG(wParam), LONG(lParam) };
+                AdjustWindowRectExForDpi(&r, DWORD(GetWindowLongPtrW(hwnd, GWL_STYLE)), FALSE, 0, GetDpiForWindow(hwnd));
+                SetWindowPos(hwnd, nullptr, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+                return 0;
+            }
             case WM_SYSKEYDOWN:
                 if (wParam == VK_F10 && dev::console::OnKeyDown(wParam, lParam))
                     return 0;
+                // Alt+Enter: windowed <-> borderless, before the key reaches the game (Enter is A in the menus).
+                if (wParam == VK_RETURN && (lParam & (1 << 29)))
+                {
+                    if (!(lParam & (1 << 30)))
+                        SetMode(g_mode == settings::WindowMode::Windowed ? settings::WindowMode::Borderless : settings::WindowMode::Windowed);
+                    return 0;
+                }
                 if (!(lParam & (1 << 30)))
                     input::pc::OnKey(KeyOf(wParam, lParam), true);
                 if (wParam == VK_MENU || wParam == VK_F10)
                     return 0;
-                // Alt+Enter: windowed <-> borderless.
-                if (wParam == VK_RETURN && (lParam & (1 << 29)) && !(lParam & (1 << 30)))
-                {
-                    SetMode(g_mode == settings::WindowMode::Windowed ? settings::WindowMode::Borderless : settings::WindowMode::Windowed);
-                    return 0;
-                }
                 return DefWindowProcW(hwnd, message, wParam, lParam);
             case WM_CLOSE:
                 input::StopRecording();  // a recording in progress keeps everything up to here
@@ -312,6 +340,23 @@ namespace gpu::window
     {
         if (HWND window = g_window.load())
             PostMessageW(window, WM_CHAR, c, 1);
+    }
+
+    // A whole Alt+Enter: the key up matters too (a lone Enter is A in the menus, input::pc::OnKey).
+    void PostAltEnter()
+    {
+        HWND window = g_window.load();
+        if (!window)
+            return;
+        LPARAM down = 1 | (LPARAM(0x1C) << 16) | (1 << 29);  // repeat 1, scan code of Enter, Alt held
+        PostMessageW(window, WM_SYSKEYDOWN, VK_RETURN, down);
+        PostMessageW(window, WM_SYSKEYUP, VK_RETURN, down | (1 << 30) | (LPARAM(1) << 31));
+    }
+
+    void SetClientSize(uint32_t width, uint32_t height)
+    {
+        if (HWND window = g_window.load())
+            PostMessageW(window, WM_APP_SET_CLIENT, width, height);
     }
 
     bool IsFocused()
