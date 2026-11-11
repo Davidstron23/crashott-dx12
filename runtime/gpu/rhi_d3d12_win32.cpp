@@ -613,6 +613,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
             D3D12Texture m_backBuffers[BACK_BUFFER_COUNT];
             uint32_t m_backBufferWidth = 1280, m_backBufferHeight = 720;
             uint32_t m_failedWidth = 0, m_failedHeight = 0;  // the size ResizeBuffers refused: not tried again until the size changes
+            uint32_t m_safe = 0;                              // SafeMode bits (rhi.h)
+            int m_presentMode = -1;                           // the last Present's mode (0 V-Sync, 1 tearing, 2 no tearing), to log a change once
+            bool m_presentFailed = false;                     // a failed Present is logged once
             UINT m_swapFlags = 0;                             // DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING when Windows admits it (creation and ResizeBuffers must agree)
             ComPtr<ID3D12Fence> m_fence;
             uint64_t m_fenceValue = 0;
@@ -819,7 +822,10 @@ float4 main(uint id : SV_VertexID) : SV_Position
             barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             barrier.Transition.StateBefore = texture->state;
             barrier.Transition.StateAfter = state;
-            m_list->ResourceBarrier(1, &barrier);
+            // Safe mode "barriers": a global UAV barrier (every earlier write) with each transition.
+            D3D12_RESOURCE_BARRIER barriers[2] = { barrier, {} };
+            barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            m_list->ResourceBarrier((m_safe & SAFE_BARRIERS) ? 2 : 1, barriers);
             texture->state = state;
         }
 
@@ -1073,8 +1079,18 @@ float4 main(uint id : SV_VertexID) : SV_Position
         Shader* D3D12Device::CreateShader(Stage stage, const std::string& hlsl, const char* name, Layout)
         {
             auto shader = std::make_unique<D3D12Shader>();
-            if (!CompileDxil(stage, hlsl, name, m_shaderCache, m_dxilCache, shader->code, &m_stats.shaderCompiles, &m_stats.shaderFailures,
-                             &m_stats.shaderCached))
+            uint64_t compiles = m_stats.shaderCompiles;
+            LARGE_INTEGER start, end;
+            QueryPerformanceCounter(&start);
+            bool compiled = CompileDxil(stage, hlsl, name, m_shaderCache, m_dxilCache, shader->code, &m_stats.shaderCompiles, &m_stats.shaderFailures,
+                                        &m_stats.shaderCached);
+            QueryPerformanceCounter(&end);
+            if (m_stats.shaderCompiles != compiles)  // not from the disk cache: RF-8 counts it
+            {
+                m_timing.shaders++;
+                m_timing.shaderTicks += uint64_t(end.QuadPart - start.QuadPart);
+            }
+            if (!compiled)
             {
                 // RF-7 (the renderer asks once per shader: it remembers the failure). DXC's message is in the line before.
                 Log("[gpu] Direct3D 12: shader %s does not compile to DXIL: what uses it is not drawn", name);
@@ -1295,7 +1311,12 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 for (uint32_t i = 0; i < key.colorCount; i++)
                     desc.RTVFormats[i] = DXGI_FORMAT(key.colorFormats[i]);
                 desc.SampleDesc.Count = 1;
+                LARGE_INTEGER start, end;
+                QueryPerformanceCounter(&start);
                 HRESULT result = m_device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline->state));
+                QueryPerformanceCounter(&end);
+                m_timing.pipelines++;  // RF-8: the recording thread compiles it
+                m_timing.pipelineTicks += uint64_t(end.QuadPart - start.QuadPart);
                 if (FAILED(result))
                 {
                     // RF-7: once per shader, however many pipelines it is in.
@@ -1468,6 +1489,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
             }
 
             std::vector<uint8_t> vsCode, psCode;
+            LARGE_INTEGER start, end;
+            QueryPerformanceCounter(&start);
+            uint64_t dxilBefore = m_stats.dxilCompiles;
             if (desc.vs.empty())
                 vsCode = m_fullscreenVs;
             else if (!CompileDxil(Stage::Vertex, desc.vs, (desc.name + "_vs").c_str(), m_shaderCache, m_dxilCache, vsCode, &m_stats.dxilCompiles,
@@ -1508,6 +1532,10 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 Log("[gpu] %s: could not create the pipeline (0x%08X)", desc.name.c_str(), unsigned(created));
                 return nullptr;
             }
+            QueryPerformanceCounter(&end);
+            m_timing.pipelines++;  // RF-8 (the DXIL it compiled counts as shaders)
+            m_timing.pipelineTicks += uint64_t(end.QuadPart - start.QuadPart);
+            m_timing.shaders += uint32_t(m_stats.dxilCompiles - dxilBefore);
             m_stats.passPipelines++;
             m_passPipelines.push_back(std::move(pipeline));
             return m_passPipelines.back().get();
@@ -1572,8 +1600,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         void D3D12Device::LogSwapChain()
         {
-            Log("[gpu] Direct3D 12: swap chain %ux%u, %u buffers, flip discard, %s", m_backBufferWidth, m_backBufferHeight, BACK_BUFFER_COUNT,
-                m_swapFlags ? "tearing allowed" : "no tearing");
+            Log("[gpu] Direct3D 12: swap chain %ux%u, %u buffers, flip %s, %s", m_backBufferWidth, m_backBufferHeight, BACK_BUFFER_COUNT,
+                (m_safe & SAFE_PRESENT) ? "sequential" : "discard", m_swapFlags ? "tearing allowed" : "no tearing");
         }
 
         void D3D12Device::CreateBackBuffers()
@@ -1631,17 +1659,31 @@ float4 main(uint id : SV_VertexID) : SV_Position
             QueryPerformanceCounter(&submitStart);
             Submit();
             QueryPerformanceCounter(&submitEnd);
-            // No tearing and no exclusive fullscreen (spec 004): V-Sync off just means Present(0).
-            m_swapChain->Present(vsync ? 1 : 0, 0);
+            // V-Sync: wait for the refresh. Without it Present(0), with tearing when the swap chain was made for it (RF-4); the
+            // choice is per call, so a V-Sync change in SETTINGS counts on the next frame.
+            bool tearing = !vsync && (m_swapFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);
+            int mode = vsync ? 0 : tearing ? 1 : 2;
+            if (mode != m_presentMode)
+            {
+                m_presentMode = mode;
+                Log("[gpu] Direct3D 12: presenting %s", mode == 0 ? "with V-Sync" : mode == 1 ? "without V-Sync, with tearing" : "without V-Sync, no tearing");
+            }
+            HRESULT presented = m_swapChain->Present(vsync ? 1 : 0, tearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+            if (FAILED(presented) && !m_presentFailed)
+            {
+                m_presentFailed = true;  // device loss is the next spec's
+                Log("[gpu] Direct3D 12: Present failed (0x%08X)", unsigned(presented));
+            }
             QueryPerformanceCounter(&presentEnd);
             m_timing.submitTicks += uint64_t(submitEnd.QuadPart - submitStart.QuadPart);
             m_timing.presentTicks = std::max(m_timing.presentTicks, uint64_t(presentEnd.QuadPart - submitEnd.QuadPart));
 
-            // At most two frames in flight.
+            // At most two frames in flight (RF-5; by code review: the loop below waits for the oldest fence as soon as a third is
+            // queued). The safe mode's "serial" waits for this one too.
             m_frameFences.push_back(m_fenceValue);
             LARGE_INTEGER waitStart, waitEnd;
             QueryPerformanceCounter(&waitStart);
-            while (m_frameFences.size() > 2)
+            while (m_frameFences.size() > ((m_safe & SAFE_SERIAL) ? 0u : 2u))
             {
                 WaitForFence(m_frameFences.front());
                 m_frameFences.pop_front();
@@ -1755,6 +1797,14 @@ float4 main(uint id : SV_VertexID) : SV_Position
         bool D3D12Device::Init(const DeviceInfo& info)
         {
             m_hwnd = HWND(info.window);
+            m_safe = info.safeMode;
+            // RF-6: what D3D12 has no equivalent for is logged, never an error.
+            if (m_safe)
+            {
+                const uint32_t applies = SAFE_BARRIERS | SAFE_SERIAL | SAFE_PRESENT;
+                Log("[gpu] Direct3D 12: GPU safe mode: applied %s; no effect here (no equivalent) %s", SafeModeNames(m_safe & applies).c_str(),
+                    SafeModeNames(m_safe & ~applies).c_str());
+            }
             m_shaderCache = info.shaderCache;
             // CRASH_D3D12_FAIL=shaders falls back to Vulkan: no DXIL cache is created or touched.
             m_dxilCache = m_failShaders ? std::filesystem::path() : DxilCacheFolder(info.shaderCache);
@@ -1903,12 +1953,14 @@ float4 main(uint id : SV_VertexID) : SV_Position
             swapDesc.SampleDesc.Count = 1;
             swapDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
             swapDesc.BufferCount = BACK_BUFFER_COUNT;
-            swapDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+            swapDesc.SwapEffect = (m_safe & SAFE_PRESENT) ? DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL : DXGI_SWAP_EFFECT_FLIP_DISCARD;
             ComPtr<IDXGIFactory5> factory5;
             BOOL tearing = FALSE;
             if (SUCCEEDED(m_factory.As(&factory5)) &&
                 FAILED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof(tearing))))
                 tearing = FALSE;
+            if (m_safe & SAFE_PRESENT)
+                tearing = FALSE;  // safe mode "present": no tearing, sequential flip
             m_swapFlags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
             swapDesc.Flags = m_swapFlags;
             ComPtr<IDXGISwapChain1> swapChain;
