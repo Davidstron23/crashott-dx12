@@ -8,6 +8,7 @@
 #include "input.h"
 #include "pad_slots.h"
 #include "pc_input.h"
+#include "../gpu/window.h"
 #include "input_record.h"
 #include "../audio/game_volumes.h"
 #include "../settings/direct_boot.h"
@@ -69,7 +70,8 @@ namespace
     // trigger at any position: LS=0.5/-1 (x/y, -1..1), RS=x/y, LT=0.7, RT=1 (0..1), e.g.
     // 146000:LS=0.3/1:3000. A time can be relative to a test event (settings/direct_boot.h):
     // gameplay_ready+2500:A (ms after the first gameplay_ready), level_ready#2+0:SHOT (the second
-    // one); an entry waits for its event. SHOT saves a screenshot. A P2_ / P3_ / P4_ prefix on a
+    // one); an entry waits for its event. SHOT saves a screenshot. ALT_ENTER and WINSIZE=w/h act on the
+    // game's own window, without activating it (tests: window.h). A P2_ / P3_ / P4_ prefix on a
     // button, stick or trigger presses it on a virtual controller 1 / 2 / 3 instead, connected from
     // boot (local co-op tests without a second pad): gameplay_ready+1000:P2_START, P2_LS=1/0. The
     // replay on the game clock (CRASH_REPLAY) is in input_record.cpp.
@@ -84,6 +86,7 @@ namespace
         int mouse = -1;       // MOUSE=x/y (0), CLICK=x/y (1), RCLICK=x/y (2), LDOWN=x/y (3), LUP=x/y (4): the cursor
                               // on the 1280x720 image; WHEEL=n (5)
         bool shot = false;    // SHOT: a screenshot
+        int window = 0;       // ALT_ENTER (1), WINSIZE=w/h (2: x, y): the window's own test hooks (gpu/window.h)
         bool done = false;    // MOUSE / CLICK / SHOT entries act once
         char analog = 0;      // 'L'/'R' stick, 'l'/'r' trigger
         float x = 0.0f, y = 0.0f;
@@ -132,6 +135,21 @@ namespace
             {
                 ScriptedPress press{ time, 0, hold };
                 press.shot = true;
+                presses.push_back(press);
+            }
+            if (length == 9 && plat::CompareNoCaseN(name, "ALT_ENTER", 9) == 0)
+            {
+                ScriptedPress press{ time, 0, hold };
+                press.window = 1;
+                presses.push_back(press);
+            }
+            if (length > 8 && plat::CompareNoCaseN(name, "WINSIZE=", 8) == 0)
+            {
+                ScriptedPress press{ time, 0, hold };
+                press.window = 2;
+                press.x = float(strtod(name + 8, &end));
+                if (*end == '/')
+                    press.y = float(strtod(end + 1, &end));
                 presses.push_back(press);
             }
             for (const auto& [text, stick] : STICK_NAMES)
@@ -247,6 +265,14 @@ namespace
             {
                 const_cast<ScriptedPress&>(press).done = true;
                 input::RequestShot();
+            }
+            if (press.window && !press.done && Due(press, now))
+            {
+                const_cast<ScriptedPress&>(press).done = true;
+                if (press.window == 1)
+                    gpu::window::PostAltEnter();
+                else
+                    gpu::window::SetClientSize(uint32_t(press.x), uint32_t(press.y));
             }
         }
         return keys;

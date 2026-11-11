@@ -49,6 +49,12 @@ namespace gpu::window
     void PostKey(uint32_t vk, uint32_t scan, bool extended);
     void PostChar(wchar_t c);
 
+    // Test hooks (CRASH_INPUT_SCRIPT ALT_ENTER / WINSIZE=w/h), posted to this window only and never
+    // activating it: a whole Alt+Enter press (key down and up), and the client area set to w x h
+    // (the window keeps its top-left corner).
+    void PostAltEnter();
+    void SetClientSize(uint32_t width, uint32_t height);
+
     // " | run <folder> | session <id> | PID n" (UTF-8) for the title: who started this instance
     // (window_title.cpp, shared by the backends).
     std::string InstanceTitleSuffix();

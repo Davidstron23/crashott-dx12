@@ -285,6 +285,10 @@ namespace gpu::window
         SDL_PushEvent(&event);
     }
 
+    // Test hooks of the Win32 window (window.h): not wired here.
+    void PostAltEnter() {}
+    void SetClientSize(uint32_t, uint32_t) {}
+
     void PostChar(wchar_t c)
     {
         if (!g_window.load() || !g_setModeEvent)

@@ -427,6 +427,34 @@ env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500
 input = [["@main_menu"], [9, "RB"], [9.6, "RB"], [10.2, "RB"], [11, "RIGHT"], [11.6, "SHOT"], [12.2, "LEFT"], [12.8, "LEFT"], [13.4, "SHOT"], [14, "LEFT"], [14.6, "RIGHT"], [15.2, "RIGHT"], [15.8, "RIGHT"], [16.4, "B"], [18, "SHOT"]]
 expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'graphics\.upscaler -> DLSS'], log_contains = ['DLSS no, FSR yes', 'graphics\.upscaler -> FSR 3\.1', 'graphics\.upscaler -> OFF', '\[settings\] screen closed'] }
 
+# Spec 005, T1 (RF-1, RF-2, RF-9): la cadena de presentacion sigue a la ventana. Con --set renderer=vulkan se mide la misma ventana con Vulkan.
+# WINSIZE fija el area cliente (sin mover ni activar la ventana); ALT_ENTER es una pulsacion completa. Con --background, CRASH_WINDOW_MONITOR pone el "monitor" de
+# sin bordes fuera del escritorio. Las capturas miden: 960x540 tras WINSIZE, el monitor (el rectangulo de CRASH_WINDOW_MONITOR) tras el primer ALT_ENTER y 960x540 tras el segundo.
+[profiles.renderizador_d3d12_janela]
+description = "renderer=d3d12 en el menu: WINSIZE, Alt+Enter ida y vuelta, captura tras cada paso; la cadena se rehace al tamano de cada uno"
+test = true
+timeout = 30
+audio = false
+userdata_mode = "copy"
+skip_intros = true
+renderer = "d3d12"
+env = { CRASH_NO_HID = "1", CRASH_SETTINGS = "video.fps_limit=30" }
+input = [["@main_menu"], [2, "SHOT"], [3, "WINSIZE", 960, 540], [5, "SHOT"], [6, "ALT_ENTER"], [8, "SHOT"], [9, "ALT_ENTER"], [11, "SHOT"]]
+expect = { exit = ["timeout"], events = ["main_menu"], events_absent = ["name_entry"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'could not resize', 'fails on purpose'], log_contains = ['swap chain 960x540'] }
+
+# La variante arranca en fullscreen y no vuelve a windowed (g_windowedRect lo dejaria en el escritorio): capturas del monitor y de 960x540 tras WINSIZE.
+[profiles.renderizador_d3d12_janela_fullscreen]
+description = "renderer=d3d12 arrancando en video.window=fullscreen: sin bordes cubriendo el rectangulo de CRASH_WINDOW_MONITOR, luego WINSIZE"
+test = true
+timeout = 30
+audio = false
+userdata_mode = "copy"
+skip_intros = true
+renderer = "d3d12"
+env = { CRASH_NO_HID = "1", CRASH_SETTINGS = "video.fps_limit=30;video.window=fullscreen" }
+input = [["@main_menu"], [2, "SHOT"], [3, "WINSIZE", 960, 540], [5, "SHOT"]]
+expect = { exit = ["timeout"], events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'could not resize', 'fails on purpose'], log_contains = ['swap chain 960x540'] }
+
 [profiles.menu]
 description = "Pula as intros (skip_intros: sem vídeos de logo e sem tela de título) e chega ao menu principal com música"
 test = true

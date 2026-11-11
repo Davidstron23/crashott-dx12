@@ -598,6 +598,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             D3D12_CPU_DESCRIPTOR_HANDLE Rtv(D3D12Texture* texture);
             D3D12_CPU_DESCRIPTOR_HANDLE Dsv(D3D12Texture* texture);
             void ReleaseDescriptors(D3D12Texture* texture);
+            void LogSwapChain();
 
             std::string m_adapterName;
             std::filesystem::path m_shaderCache;      // userdata\shadercache: only the failed HLSL goes near it (shaderdump\)
@@ -611,6 +612,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
             ComPtr<IDXGISwapChain3> m_swapChain;
             D3D12Texture m_backBuffers[BACK_BUFFER_COUNT];
             uint32_t m_backBufferWidth = 1280, m_backBufferHeight = 720;
+            uint32_t m_failedWidth = 0, m_failedHeight = 0;  // the size ResizeBuffers refused: not tried again until the size changes
+            UINT m_swapFlags = 0;                             // DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING when Windows admits it (creation and ResizeBuffers must agree)
             ComPtr<ID3D12Fence> m_fence;
             uint64_t m_fenceValue = 0;
             HANDLE m_fenceEvent = nullptr;
@@ -1567,6 +1570,12 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         // Presentation ----------------------------------------------------------------------------
 
+        void D3D12Device::LogSwapChain()
+        {
+            Log("[gpu] Direct3D 12: swap chain %ux%u, %u buffers, flip discard, %s", m_backBufferWidth, m_backBufferHeight, BACK_BUFFER_COUNT,
+                m_swapFlags ? "tearing allowed" : "no tearing");
+        }
+
         void D3D12Device::CreateBackBuffers()
         {
             for (uint32_t i = 0; i < BACK_BUFFER_COUNT; i++)
@@ -1587,19 +1596,31 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         bool D3D12Device::Resize(uint32_t width, uint32_t height)
         {
-            if (!width || !height || (width == m_backBufferWidth && height == m_backBufferHeight))
+            if (!width || !height || (width == m_backBufferWidth && height == m_backBufferHeight) ||
+                (width == m_failedWidth && height == m_failedHeight))
                 return false;
             WaitIdle();
             // The swap chain can only be resized once every reference to its buffers is gone.
             for (auto& buffer : m_backBuffers)
                 buffer.resource.Reset();
-            if (SUCCEEDED(m_swapChain->ResizeBuffers(BACK_BUFFER_COUNT, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0)))
+            HRESULT result = m_swapChain->ResizeBuffers(BACK_BUFFER_COUNT, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, m_swapFlags);
+            if (SUCCEEDED(result))
             {
                 m_backBufferWidth = width;
                 m_backBufferHeight = height;
+                m_failedWidth = m_failedHeight = 0;
+                LogSwapChain();
+            }
+            else
+            {
+                // Keep the old size (the buffers are taken again below) and do not retry this size every frame.
+                m_failedWidth = width;
+                m_failedHeight = height;
+                Log("[gpu] Direct3D 12: could not resize the swap chain to %ux%u (0x%08X): keeping %ux%u", width, height, unsigned(result),
+                    m_backBufferWidth, m_backBufferHeight);
             }
             CreateBackBuffers();
-            return true;
+            return SUCCEEDED(result);
         }
 
         void D3D12Device::Present(bool vsync)
@@ -1883,6 +1904,13 @@ float4 main(uint id : SV_VertexID) : SV_Position
             swapDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
             swapDesc.BufferCount = BACK_BUFFER_COUNT;
             swapDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+            ComPtr<IDXGIFactory5> factory5;
+            BOOL tearing = FALSE;
+            if (SUCCEEDED(m_factory.As(&factory5)) &&
+                FAILED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof(tearing))))
+                tearing = FALSE;
+            m_swapFlags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+            swapDesc.Flags = m_swapFlags;
             ComPtr<IDXGISwapChain1> swapChain;
             if (FAILED(m_factory->CreateSwapChainForHwnd(m_queue.Get(), m_hwnd, &swapDesc, nullptr, nullptr, &swapChain)) ||
                 FAILED(swapChain.As(&m_swapChain)))
@@ -1894,6 +1922,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             m_backBufferWidth = info.width;
             m_backBufferHeight = info.height;
             CreateBackBuffers();
+            LogSwapChain();
 
             // Timestamps: without them TimestampFrequency() stays 0 and the callers skip their timing.
             D3D12_QUERY_HEAP_DESC queryDesc{ D3D12_QUERY_HEAP_TYPE_TIMESTAMP, TIMESTAMPS, 0 };
