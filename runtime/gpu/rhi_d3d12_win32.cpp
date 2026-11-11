@@ -12,6 +12,7 @@
 #include "rhi_ring.h"
 #include "../diagnostics.h"
 #include "../platform/platform.h"
+#include "../platform/text.h"
 
 #include <windows.h>
 #include <d3d12.h>
@@ -611,6 +612,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
             void LogSwapChain();
 
             std::string m_adapterName;
+            ComPtr<IDXGIAdapter1> m_adapter;     // the chosen adapter, kept for the diagnostics (spec 006, T3)
+            DXGI_ADAPTER_DESC1 m_adapterDesc{};
+            bool ChooseAdapter();
             std::filesystem::path m_shaderCache;      // userdata\shadercache: only the failed HLSL goes near it (shaderdump\)
             std::filesystem::path m_dxilCache;        // userdata\shadercache_dxil
             bool m_compilationNoted = false;
@@ -1841,6 +1845,65 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         // Startup ---------------------------------------------------------------------------------
 
+        // Spec 006 RF-2: Vulkan's rule (ChoosePhysicalDevice). No software adapters; shared memory (UMA) counts as integrated (2), else
+        // discrete (3); CRASH_D3D12_DEVICE=<part of the name> adds 10 (case-sensitive, like CRASH_VULKAN_DEVICE); the highest wins, the first on a tie.
+        bool D3D12Device::ChooseAdapter()
+        {
+            const char* wanted = getenv("CRASH_D3D12_DEVICE");
+            if (wanted && !*wanted)
+                wanted = nullptr;
+            std::vector<ComPtr<IDXGIAdapter1>> adapters;
+            for (UINT i = 0; ; i++)
+            {
+                ComPtr<IDXGIAdapter1> adapter;
+                if (m_factory->EnumAdapters1(i, &adapter) == DXGI_ERROR_NOT_FOUND)
+                    break;
+                if (adapter)
+                    adapters.push_back(adapter);
+            }
+            int bestScore = -1;
+            bool matched = false;
+            size_t candidates = 0;
+            std::vector<std::string> lines;
+            for (const ComPtr<IDXGIAdapter1>& adapter : adapters)
+            {
+                DXGI_ADAPTER_DESC1 desc{};
+                adapter->GetDesc1(&desc);
+                if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+                    continue;
+                std::string name = plat::NarrowUtf8(desc.Description);
+                ComPtr<ID3D12Device> device;
+                if (FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))))
+                {
+                    Log("[gpu] Direct3D 12: %s: no feature level 11_0", name.c_str());
+                    continue;
+                }
+                D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
+                device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture));
+                int score = architecture.UMA ? 2 : 3;
+                candidates++;
+                lines.push_back(name + (score == 3 ? " (discrete)" : " (integrated)"));
+                if (wanted && name.find(wanted) != std::string::npos)
+                {
+                    score += 10;
+                    matched = true;
+                }
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    m_adapter = adapter;
+                    m_adapterDesc = desc;
+                    m_device = device;
+                }
+            }
+            if (lines.size() > 1)  // like Vulkan: candidates are listed only when there is a choice
+                for (const std::string& line : lines)
+                    Log("[gpu] Direct3D 12: GPU candidate: %s", line.c_str());
+            if (wanted && !matched && candidates)
+                Log("[gpu] Direct3D 12: CRASH_D3D12_DEVICE=%s matches no adapter; the default rule applies", wanted);
+            return m_device != nullptr;
+        }
+
         // Every failure says why and returns false: the renderer then starts Vulkan in the same window.
         bool D3D12Device::Init(const DeviceInfo& info)
         {
@@ -1858,10 +1921,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
             m_dxilCache = m_failShaders ? std::filesystem::path() : DxilCacheFolder(info.shaderCache);
             NoteShaderCompilation(info.shaderCompilation);
             // No debug layer (spec 004): info.debug is a Vulkan switch for now.
-            if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&m_factory))) ||
-                FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device))))
+            if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&m_factory))) || !ChooseAdapter())
             {
-                Log("[gpu] Direct3D 12: no device with feature level 11_0");
+                Log("[gpu] Direct3D 12: no hardware adapter with feature level 11_0");
                 return false;
             }
             // The shaders are DXIL (Shader Model 6).
@@ -1878,13 +1940,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 std::error_code error;
                 std::filesystem::create_directories(m_dxilCache, error);  // without it, shaders compile every start
             }
-            DXGI_ADAPTER_DESC1 adapterDesc{};
-            ComPtr<IDXGIAdapter1> adapter;
-            if (SUCCEEDED(m_factory->EnumAdapterByLuid(m_device->GetAdapterLuid(), IID_PPV_ARGS(&adapter))))
-                adapter->GetDesc1(&adapterDesc);
-            char adapterName[128];
-            WideCharToMultiByte(CP_UTF8, 0, adapterDesc.Description, -1, adapterName, sizeof(adapterName), nullptr, nullptr);
-            m_adapterName = adapterName;
+            m_adapterName = plat::NarrowUtf8(m_adapterDesc.Description);  // whole, in UTF-8 (a fixed buffer cut non-ASCII names)
 
             D3D12_COMMAND_QUEUE_DESC queueDesc{ D3D12_COMMAND_LIST_TYPE_DIRECT };
             if (FAILED(m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_queue))))

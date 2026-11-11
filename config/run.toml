@@ -1367,3 +1367,16 @@ dev_console = [
 ]
 input = [["@hub"], [2.8, "SHOT"], ["@gameplay_ready"], [2, "SHOT"]]
 expect = { exit = ["timeout"], events = ["hub", "level_ready", "gameplay_ready"], log_absent = ['\[fatal\]', '\[crash\]'], log_contains = ['StartLevel \+ SkipToLevel from node 575', 'event level_start .*L1_E3'] }
+
+# Spec 006, T2 (RF-2): CRASH_D3D12_DEVICE sem coincidência só se anota no log e vale a regra do Vulkan (sem software, UMA = integrada, a primeira da maior nota).
+# O nome do adaptador sai igual ao do boot Vulkan; forçar com parte do nome real se confere por revisão de código (006-i).
+[profiles.renderizador_d3d12_adaptador]
+description = "renderer=d3d12 com CRASH_D3D12_DEVICE sem coincidência: o aviso no log e o Direct3D 12 liga igual, na GPU da regra do Vulkan"
+test = true
+timeout = 20
+audio = false
+userdata_mode = "copy"
+screenshots = [300, 540]
+renderer = "d3d12"
+env = { CRASH_D3D12_DEVICE = "no-such-gpu", CRASH_NO_HID = "1" }
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12: CRASH_D3D12_DEVICE=no-such-gpu matches no adapter; the default rule applies', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+'] }
