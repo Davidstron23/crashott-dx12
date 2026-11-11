@@ -54,6 +54,7 @@ namespace gpu::rhi
     namespace
     {
         constexpr uint32_t BACK_BUFFER_COUNT = 2;
+        constexpr uint32_t REMOVE_AT_PRESENT = 120;  // CRASH_D3D12_FAIL=removed: a few seconds after the start, always the same frame
         constexpr uint32_t TIMESTAMPS = 64;  // the device's timestamp slots (the contract in rhi.h)
         constexpr uint64_t UPLOAD_RING_SIZE = 256ull << 20;
         constexpr uint32_t RTV_DESCRIPTORS = 4096;
@@ -525,6 +526,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
             bool Init(const DeviceInfo& info);
             void FailShaders() { m_failShaders = true; }
+            void RemoveOnPurpose() { m_removeOnPurpose = true; }
 
             const std::string& AdapterName() const override { return m_adapterName; }
 
@@ -591,6 +593,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             void LogStats() override;
 
         private:
+            void CheckDeviceLost(const char* where);
             void WaitForFence(uint64_t value);
             void RetireCompleted();
             void CollectGarbage();
@@ -670,6 +673,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
             std::vector<std::unique_ptr<D3D12Pipeline>> m_passPipelines;
             std::vector<uint8_t> m_fullscreenVs;  // DXIL of FULLSCREEN_VS
             bool m_failShaders = false;           // CRASH_D3D12_FAIL=shaders (spec 001): every pass pipeline fails, to see the fallback to Vulkan
+            bool m_removeOnPurpose = false;       // CRASH_D3D12_FAIL=removed (spec 006): the device is removed at Present number REMOVE_AT_PRESENT
+            uint32_t m_presentCount = 0;
 
             // Buffers given back by the renderer, released once the GPU is past the last submission that may use them.
             struct Garbage
@@ -690,12 +695,31 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         // Submission ------------------------------------------------------------------------------
 
+        // A lost device ends the game with the reason, as Vulkan's `device lost` does (spec 006, RF-1). GetDeviceRemovedReason is S_OK
+        // while the device lives, so a call from a failure that was not a loss (a size that does not fit) does nothing.
+        void D3D12Device::CheckDeviceLost(const char* where)
+        {
+            HRESULT reason = m_device->GetDeviceRemovedReason();
+            if (reason == S_OK)
+                return;
+            const char* name = reason == DXGI_ERROR_DEVICE_HUNG ? "DXGI_ERROR_DEVICE_HUNG"
+                             : reason == DXGI_ERROR_DEVICE_REMOVED ? "DXGI_ERROR_DEVICE_REMOVED"
+                             : reason == DXGI_ERROR_DEVICE_RESET ? "DXGI_ERROR_DEVICE_RESET"
+                             : reason == DXGI_ERROR_DRIVER_INTERNAL_ERROR ? "DXGI_ERROR_DRIVER_INTERNAL_ERROR"
+                             : reason == DXGI_ERROR_INVALID_CALL ? "DXGI_ERROR_INVALID_CALL" : "unknown";
+            Fatal("[gpu] Direct3D 12: device lost (the GPU stopped or the driver reset it) %s: %s (0x%08X)", where, name, unsigned(reason));
+        }
+
         void D3D12Device::WaitForFence(uint64_t value)
         {
-            if (m_fence->GetCompletedValue() >= value)
-                return;
-            m_fence->SetEventOnCompletion(value, m_fenceEvent);
-            WaitForSingleObject(m_fenceEvent, INFINITE);
+            if (m_fence->GetCompletedValue() < value)
+            {
+                m_fence->SetEventOnCompletion(value, m_fenceEvent);
+                WaitForSingleObject(m_fenceEvent, INFINITE);
+            }
+            // A lost device leaves the fence at UINT64_MAX: every wait would look done (the rings' loops would spin on a GPU that is gone).
+            if (m_fence->GetCompletedValue() == UINT64_MAX)
+                CheckDeviceLost("waiting for the GPU");
         }
 
         void D3D12Device::RetireCompleted()
@@ -1649,6 +1673,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             else
             {
                 // Keep the old size (the buffers are taken again below) and do not retry this size every frame.
+                CheckDeviceLost("resizing the swap chain");
                 m_failedWidth = width;
                 m_failedHeight = height;
                 Log("[gpu] Direct3D 12: could not resize the swap chain to %ux%u (0x%08X): keeping %ux%u", width, height, unsigned(result),
@@ -1660,6 +1685,17 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         void D3D12Device::Present(bool vsync)
         {
+            if (m_removeOnPurpose && ++m_presentCount == REMOVE_AT_PRESENT)
+            {
+                ComPtr<ID3D12Device5> device5;
+                if (SUCCEEDED(m_device.As(&device5)))
+                {
+                    Log("[gpu] CRASH_D3D12_FAIL=removed: Direct3D 12 removes the device on purpose (Present %u)", REMOVE_AT_PRESENT);
+                    device5->RemoveDevice();
+                }
+                else
+                    Log("[gpu] CRASH_D3D12_FAIL=removed: this Windows has no ID3D12Device5, the device stays");
+            }
             D3D12Texture* backBuffer = &m_backBuffers[m_swapChain->GetCurrentBackBufferIndex()];
             Transition(backBuffer, D3D12_RESOURCE_STATE_PRESENT);
             LARGE_INTEGER submitStart, submitEnd, presentEnd;
@@ -1678,7 +1714,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
             HRESULT presented = m_swapChain->Present(vsync ? 1 : 0, tearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
             if (FAILED(presented) && !m_presentFailed)
             {
-                m_presentFailed = true;  // device loss is the next spec's
+                CheckDeviceLost("presenting");
+                m_presentFailed = true;
                 Log("[gpu] Direct3D 12: Present failed (0x%08X)", unsigned(presented));
             }
             QueryPerformanceCounter(&presentEnd);
@@ -1747,7 +1784,10 @@ float4 main(uint id : SV_VertexID) : SV_Position
             ComPtr<ID3D12Resource> readback;
             if (FAILED(m_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                                                          IID_PPV_ARGS(&readback))))
+            {
+                CheckDeviceLost("reading a capture");  // a lost device fails here too: do not lose the capture in silence
                 return false;
+            }
             D3D12_RESOURCE_STATES before = source->state;
             Transition(source, D3D12_RESOURCE_STATE_COPY_SOURCE);
             D3D12_TEXTURE_COPY_LOCATION destination{};
@@ -1760,6 +1800,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             m_list->CopyTextureRegion(&destination, 0, 0, 0, &sourceLocation, nullptr);
             Transition(source, before);
             WaitIdle();
+            CheckDeviceLost("reading a capture");  // before copying to the image: no half a PNG
             void* data;
             D3D12_RANGE range{ 0, SIZE_T(totalBytes) };
             if (FAILED(readback->Map(0, &range, &data)))
@@ -2013,7 +2054,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
     Device* CreateD3D12(const DeviceInfo& info)
     {
         // Test hook (spec 001): make the start fail on purpose, to see the fallback to Vulkan.
-        bool failShaders = false;
+        bool failShaders = false, removeDevice = false;
         if (const char* fail = getenv("CRASH_D3D12_FAIL"); fail && *fail)
         {
             if (plat::CompareNoCase(fail, "device") == 0)
@@ -2026,12 +2067,16 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 Log("[gpu] CRASH_D3D12_FAIL=shaders: the Direct3D 12 shaders fail on purpose");
                 failShaders = true;
             }
+            else if (plat::CompareNoCase(fail, "removed") == 0)
+                removeDevice = true;
             else
-                Log("[gpu] CRASH_D3D12_FAIL=%s ignored (device | shaders)", fail);
+                Log("[gpu] CRASH_D3D12_FAIL=%s ignored (device | shaders | removed)", fail);
         }
         auto device = std::make_unique<D3D12Device>();
         if (failShaders)
             device->FailShaders();
+        if (removeDevice)
+            device->RemoveOnPurpose();
         if (!device->Init(info))
             return nullptr;
         return device.release();
