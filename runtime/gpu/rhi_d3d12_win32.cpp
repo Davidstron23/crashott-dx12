@@ -290,10 +290,12 @@ float4 main(uint id : SV_VertexID) : SV_Position
         // HLSL -> DXIL ------------------------------------------------------------------------------
 
         // dxcompiler.dll, loaded at run time (as rhi_vulkan_shaders.cpp does for SPIR-V). DXC's objects are not
-        // thread-safe: one compiler, one lock (the passes are few and compile at start-up).
+        // thread-safe: one compiler per thread (as rhi_vulkan_shaders.cpp), so the
+        // warm-up thread never makes the recording thread wait. g_dxc is the loading thread's, used for the fingerprint.
         std::once_flag g_dxcOnce;
+        DxcCreateInstanceProc g_dxcCreate = nullptr;
         IDxcCompiler3* g_dxc = nullptr;
-        std::mutex g_dxcMutex;
+        thread_local IDxcCompiler3* t_dxc = nullptr;
 
         void ComputeDxcFingerprint();
 
@@ -312,6 +314,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
                 g_dxc = nullptr;
                 return;
             }
+            g_dxcCreate = create;
+            t_dxc = g_dxc;
             ComputeDxcFingerprint();
         }
 
@@ -352,11 +356,14 @@ float4 main(uint id : SV_VertexID) : SV_Position
             const wchar_t* arguments[2 + std::size(DXC_ARGUMENTS)] = { L"-T", profile };
             std::copy(std::begin(DXC_ARGUMENTS), std::end(DXC_ARGUMENTS), arguments + 2);
             DxcBuffer source{ hlsl.data(), hlsl.size(), DXC_CP_UTF8 };
-            std::lock_guard<std::mutex> lock(g_dxcMutex);
+            if (!t_dxc && FAILED(g_dxcCreate(CLSID_DxcCompiler, __uuidof(IDxcCompiler3), reinterpret_cast<void**>(&t_dxc))))
+                t_dxc = nullptr;
+            if (!t_dxc)
+                return false;
             IDxcResult* result = nullptr;
             if (compiles)
                 (*compiles)++;
-            HRESULT status = g_dxc->Compile(&source, arguments, uint32_t(std::size(arguments)), nullptr, __uuidof(IDxcResult),
+            HRESULT status = t_dxc->Compile(&source, arguments, uint32_t(std::size(arguments)), nullptr, __uuidof(IDxcResult),
                                             reinterpret_cast<void**>(&result));
             if (SUCCEEDED(status) && result)
                 result->GetStatus(&status);
@@ -1075,7 +1082,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
 
         // Shaders, draw pipelines and draws ---------------------------------------------------------
 
-        // The recording thread is the only caller (the warm-up is off with Direct3D 12), so m_shaders needs no lock.
+        // The recording thread is the only caller (the warm-up only fills the disk cache), so m_shaders needs no lock.
         Shader* D3D12Device::CreateShader(Stage stage, const std::string& hlsl, const char* name, Layout)
         {
             auto shader = std::make_unique<D3D12Shader>();

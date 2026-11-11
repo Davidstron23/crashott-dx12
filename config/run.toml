@@ -125,7 +125,7 @@ audio = false
 userdata_mode = "copy"
 screenshots = [300, 540]
 renderer = "d3d12"
-expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] Direct3D 12: shader warm-up off', '\[gpu\] Direct3D 12: game shaders: \d+ compiled, \d+ from cache, 0 failed'] }
+expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] shader warm-up: \d+ shaders x 2 variants checked in [\d.]+ ms \(0 failed\)', '\[gpu\] Direct3D 12: game shaders: \d+ compiled, \d+ from cache, 0 failed'] }
 
 # Spec 002, T1 (RF-1, RF-3, RF-4): o menu principal com Direct3D 12 desenha o fundo do jogo (arpillera, textos, botoes) sob a camada do port.
 # As duas SHOT saem ancoradas em @main_menu (2 s e 10 s depois); a paridade de bandas e de imagem com o Vulkan se confere fora (ver build/t1_tester.py).

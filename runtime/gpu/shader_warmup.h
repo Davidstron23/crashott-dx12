@@ -32,7 +32,8 @@ namespace gpu::warmup
 
     // Compiles what is missing from the cache on a low-priority thread. `device` (optional) gets
     // the variant in use (`scaled`) of each one to prepare its pipeline part (rhi::Device::PrewarmShader).
-    void StartBackground(const std::filesystem::path& shaderCache, rhi::Device* device = nullptr, bool scaled = false);
+    // `dxil` (Direct3D 12): the same shaders go to the DXIL cache (shadercache_dxil) instead of the SPIR-V one.
+    void StartBackground(const std::filesystem::path& shaderCache, rhi::Device* device = nullptr, bool scaled = false, bool dxil = false);
 
     // --precompile-shaders: compiles what is missing on every core; the number of failures.
     int Precompile(const std::filesystem::path& shaderCache);

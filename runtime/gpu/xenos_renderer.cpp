@@ -387,8 +387,8 @@ namespace gpu::renderer
         // Device: the graphics API backend (rhi.h) and the window.
         std::atomic<bool> g_active;
         rhi::Device* g_rhi = nullptr;
-        // Direct3D 12 is the renderer in use (spec 001). It draws the game's 2D draws (spec 002); the upscaler and the
-        // shader warm-up stay off for it (spec 004 and later).
+        // Direct3D 12 is the renderer in use (spec 001). It draws the game's 2D draws (spec 002); the upscaler stays off for it
+        // (spec 004 and later). The shader warm-up fills the DXIL cache.
         bool g_d3d12 = false;
         bool g_rendererArgumentGiven = false;      // --renderer on the command line (SetRendererArgument)
         const char* g_rendererArgument = nullptr;  // its value (from argv, which outlives Init); null: none
@@ -3909,10 +3909,7 @@ float4 main(float4 position : SV_Position) : SV_Target
             Log("[gpu] primary display: %dx%d at %d Hz", displayWidth, displayHeight, displayHz);
         // Both variants of every known game shader into the SPIR-V cache, off the critical path,
         // and the pipeline parts of the variant in use (asynchronous shader compilation).
-        if (g_d3d12)
-            Log("[gpu] Direct3D 12: shader warm-up off (it compiles SPIR-V)");
-        else
-            warmup::StartBackground(g_shaderCacheDir, g_rhi, g_renderScaled);
+        warmup::StartBackground(g_shaderCacheDir, g_rhi, g_renderScaled, g_d3d12);
         g_active = true;
         settings::menu::SetAvailable(true);
         return true;
