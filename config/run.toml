@@ -1394,7 +1394,7 @@ env = { CRASH_GPU_DIAG = "1", CRASH_GPU_DEBUG = "selftest", CRASH_NO_HID = "1" }
 expect = { exit = ["timeout"], min_frames = 480, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'Direct3D 12: could not', 'fails on purpose'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] Direct3D 12: adapter vendor 0x[0-9A-F]{4} device 0x[0-9A-F]{4}, (discrete|integrated) GPU, \d+ MB dedicated, \d+ MB shared, driver ', '\[gpu\] Direct3D 12: feature level \d+_\d+, highest shader model \d\.\d', '\[gpu\] Direct3D 12: diagnostics: resource binding tier', '\[gpu\] Direct3D 12: diagnostics: formats \(DXGI: S sampled', '\[gpu\] Direct3D 12: diagnostics: output 0: ', '\[gpu\] Direct3D 12: debug layer on', '\[gpu\] Direct3D 12: validation self-test: [1-9]\d* message\(s\) so far', '\[gpu\] Direct3D 12: layer (error|warning): ', '\[gpu\] Direct3D 12: \d+ layer message\(s\)'] }
 
 [profiles.giro_no_ar]
-description = "Diagnóstico do Crash rosado (spec 007): vila sem cena a 120 fps com os ajustes de David; 6 giros fixos (salto e giro, duplo salto e giro, giro no chão) com um SHOT a cada 33 ms durante 1 s desde cada um; compare com --set renderer=vulkan|d3d12"
+description = "Vila sem cena a 120 fps com FXAA, motion blur, DOF e luz completa; 6 giros fixos (salto e giro, duplo salto e giro, giro no chão) com um SHOT a cada 33 ms durante 1 s desde cada um; compare com --set renderer=vulkan|d3d12"
 test = false
 timeout = 45
 audio = false
@@ -1411,6 +1411,6 @@ input = [
     [18, "KEY_R"], [18, "SHOT"], [18.033, "SHOT"], [18.066, "SHOT"], [18.099, "SHOT"], [18.132, "SHOT"], [18.165, "SHOT"], [18.198, "SHOT"], [18.231, "SHOT"], [18.264, "SHOT"], [18.297, "SHOT"], [18.33, "SHOT"], [18.363, "SHOT"], [18.396, "SHOT"], [18.429, "SHOT"], [18.462, "SHOT"], [18.495, "SHOT"], [18.528, "SHOT"], [18.561, "SHOT"], [18.594, "SHOT"], [18.627, "SHOT"], [18.66, "SHOT"], [18.693, "SHOT"], [18.726, "SHOT"], [18.759, "SHOT"], [18.792, "SHOT"], [18.825, "SHOT"], [18.858, "SHOT"], [18.891, "SHOT"], [18.924, "SHOT"], [18.957, "SHOT"], [18.99, "SHOT"],
     [22, "KEY_R"], [22, "SHOT"], [22.033, "SHOT"], [22.066, "SHOT"], [22.099, "SHOT"], [22.132, "SHOT"], [22.165, "SHOT"], [22.198, "SHOT"], [22.231, "SHOT"], [22.264, "SHOT"], [22.297, "SHOT"], [22.33, "SHOT"], [22.363, "SHOT"], [22.396, "SHOT"], [22.429, "SHOT"], [22.462, "SHOT"], [22.495, "SHOT"], [22.528, "SHOT"], [22.561, "SHOT"], [22.594, "SHOT"], [22.627, "SHOT"], [22.66, "SHOT"], [22.693, "SHOT"], [22.726, "SHOT"], [22.759, "SHOT"], [22.792, "SHOT"], [22.825, "SHOT"], [22.858, "SHOT"], [22.891, "SHOT"], [22.924, "SHOT"], [22.957, "SHOT"], [22.99, "SHOT"],
 ]
-# tools/parity.py: dois instantes no ar de cada um dos três primeiros giros
+# tools/parity.py: two in-air moments of each of the first three spins
 parity = ["gameplay_ready+2.4", "gameplay_ready+2.7", "gameplay_ready+6.4", "gameplay_ready+6.7", "gameplay_ready+10.8", "gameplay_ready+11.1"]
 expect = { exit = ["timeout"], events = ["gameplay_ready"], log_absent = ['\[fatal\]', '\[crash\]'] }
