@@ -994,7 +994,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
             {
                 resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
                 clear.Format = desc.format;
-                clear.DepthStencil.Depth = 1.0f;
+                // The optimized clear value is what the game clears depth with (0.0, stencil 0; seen in both profiles with the debug layer),
+                // so the layer stops warning on every ClearDepthStencil. The initial clear below stays 1.0 (contract of CreateTexture).
+                clear.DepthStencil.Depth = 0.0f;
                 hasClear = true;
                 texture->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
             }
