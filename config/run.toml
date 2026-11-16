@@ -411,7 +411,7 @@ input = [
     ["@main_menu"], [11.5, "RB"], [12.1, "RB"], [12.7, "SHOT"],
     [13.3, "DOWN"], [13.9, "RIGHT"], [14.5, "RIGHT"], [15.1, "RB"], [15.7, "SHOT"], [16.3, "RIGHT"], [16.9, "SHOT"], [17.5, "B"], [20.5, "SHOT"], [26.5, "SHOT"],
 ]
-expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], min_frames = 900, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'restart needed', 'anti-aliasing .* off', 'lighting remaster off'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on', '\[gpu\] FSR available: upscaler versions', 'video\.resolution -> 1920x1080', 'graphics\.upscaler ->', '\[settings\] renderer options changed: applying them now', '\[gpu\] reconfigured: internal resolution 1920x1080', '\[settings\] screen closed', '\[gpu\] SMAA ready', '\[lighting\] ready'] }
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], min_frames = 900, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'restart needed', 'anti-aliasing .* off', 'lighting remaster off', 'FSR: could not', 'dispatch failed', '\[fsr\] error', 'upscaled, [1-9]\d* failed'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on', '\[gpu\] FSR available: upscaler versions', 'video\.resolution -> 1920x1080', 'graphics\.upscaler ->', '\[settings\] renderer options changed: applying them now', '\[gpu\] reconfigured: internal resolution 1920x1080', '\[settings\] screen closed', '\[gpu\] SMAA ready', '\[lighting\] ready'] }
 
 # RF-2, RF-8: com uma GPU não NVIDIA (CRASH_GPU_VENDOR=amd), o DLSS guardado sai em cinza e o RIGHT/LEFT não volta a ele; SETTINGS mostra FSR 3.1.
 # O expect só leva linhas comuns às duas APIs: roda igual com --set renderer=vulkan.
@@ -847,7 +847,7 @@ input = [
     ["@hub"], [2, "Y"],
     ["@gameplay_ready"], [3, "SHOT"],
 ]
-expect = { exit = ["timeout"], restarts = 0, events = ["gameplay_ready"], log_absent = ['\[fatal\]', '\[crash\]', 'restart needed'], log_contains = ['video\.resolution -> 1920x1080', 'graphics\.upscaler -> FSR', 'renderer options changed', 'reconfigured: internal resolution 1920x1080 \(1\.50x\), FSR', 'FSR [\d.]+ upscaler created: \d+x\d+ -> 1920x1080', 'XamContentCreateEx\(.*\(opened\)'] }
+expect = { exit = ["timeout"], restarts = 0, events = ["gameplay_ready"], log_absent = ['\[fatal\]', '\[crash\]', 'restart needed', 'FSR: could not', 'dispatch failed', '\[fsr\] error', 'upscaled, [1-9]\d* failed'], log_contains = ['video\.resolution -> 1920x1080', 'graphics\.upscaler -> FSR', 'renderer options changed', 'reconfigured: internal resolution 1920x1080 \(1\.50x\), FSR', 'FSR [\d.]+ upscaler created: \d+x\d+ -> 1920x1080', 'XamContentCreateEx\(.*\(opened\)'] }
 
 [profiles.sair_do_jogo]
 description = "SAIR DO JOGO (EXIT GAME, 5º item do menu principal): fecha o jogo com código 0"

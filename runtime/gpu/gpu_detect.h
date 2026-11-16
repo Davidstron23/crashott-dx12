@@ -1,8 +1,7 @@
 #pragma once
 
-// The GPU the game will pick and what it can run, shared by the launcher, the installer (which
-// DLSS/FSR files and options to offer) and the runtime's Direct3D 12 path (gpu/upscaler.cpp, whose
-// Available() answers by the same rule when no Vulkan device exists).
+// The GPU the game will pick and what it can run, shared by the launcher, and the installer (which
+// DLSS/FSR files and options to offer); the runtime no longer uses it.
 //
 //   - DetectGpu: the GPU the game will pick (Vulkan, as rhi_vulkan.cpp chooses it: discrete, then
 //     integrated, CRASH_VULKAN_DEVICE), its vendor and whether its driver has the extensions FSR 3.1

@@ -1,6 +1,5 @@
 #include "upscaler.h"
 #include "../diagnostics.h"
-#include "gpu_detect.h"
 #include "../settings/gpu_vendor.h"
 
 #include "../platform/text.h"
@@ -71,8 +70,8 @@ namespace gpu::upscaler
         }
 
         // The upscalers' files next to the exe: CrashDlss.dll + NVIDIA's nvngx_dlss.dll + AMD's
-        // amd_fidelityfx_vk.dll on Windows; libCrashDlss.so + libnvidia-ngx-dlss.so.<version> +
-        // libamd_fidelityfx_vk.so on Linux.
+        // amd_fidelityfx_vk.dll (amd_fidelityfx_dx12.dll on Direct3D 12) on Windows; libCrashDlss.so +
+        // libnvidia-ngx-dlss.so.<version> + libamd_fidelityfx_vk.so on Linux.
 #ifdef _WIN32
         constexpr const char* DLSS_MODULE = "CrashDlss.dll";
         constexpr const char* FFX_MODULE = "amd_fidelityfx_vk.dll";
