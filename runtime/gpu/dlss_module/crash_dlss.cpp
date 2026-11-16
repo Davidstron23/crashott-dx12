@@ -1,4 +1,4 @@
-// CrashDlss.dll (crash_dlss.h): DLSS through NGX's Vulkan API, for the renderer (upscaler.cpp) and
+// CrashDlss.dll (crash_dlss.h): DLSS through NGX's Vulkan or Direct3D 12 API, for the renderer (upscaler.cpp) and
 // for the launcher's and the installer's "can this PC run DLSS?" (CrashDlss_Probe). On Linux it is
 // libCrashDlss.so, with NGX's Linux library (libnvsdk_ngx.a) and NVIDIA's libnvidia-ngx-dlss.so.*.
 #include "crash_dlss.h"
@@ -142,6 +142,8 @@ namespace
     CrashDlssLogFn g_log = nullptr;
     VkDevice g_device = VK_NULL_HANDLE;
     bool g_initialized = false;
+    bool g_d3d12 = false;           // NGX was started on a Direct3D 12 device (g_d3d12Device), else on g_device
+    void* g_d3d12Device = nullptr;  // ID3D12Device
     NVSDK_NGX_Parameter* g_parameters = nullptr;
     NVSDK_NGX_Handle* g_feature = nullptr;
     uint32_t g_featureKey[5] = {};  // render w/h, output w/h, quality + flags of the feature
@@ -166,27 +168,34 @@ namespace
         Log("[dlss] %s", text.c_str());
     }
 
-    // NGX on `device`, its capability parameters, and whether DLSS Super Resolution is available.
-    // `why` gets the reason when it isn't. Leaves NGX initialized (g_initialized / g_parameters).
-    bool StartNgx(const CrashDlssDevice& device, std::string& why)
+    // NGX on the Vulkan `vulkan` or, when it is null, on the Direct3D 12 device `d3d12`, its capability
+    // parameters, and whether DLSS Super Resolution is available. `why` gets the reason when it isn't.
+    // Leaves NGX initialized (g_initialized / g_parameters).
+    bool StartNgx(const wchar_t* featureDirectory, const wchar_t* dataDirectory, const CrashDlssDevice* vulkan, void* d3d12, std::string& why)
     {
 #ifndef _WIN32
-        std::wstring featureDir = AsciiFeatureDir(device.featureDir ? device.featureDir : L".");
+        std::wstring featureDir = AsciiFeatureDir(featureDirectory ? featureDirectory : L".");
         const wchar_t* paths[] = { featureDir.c_str() };
 #else
-        const wchar_t* paths[] = { device.featureDir ? device.featureDir : L"." };
+        const wchar_t* paths[] = { featureDirectory ? featureDirectory : L"." };
 #endif
         NVSDK_NGX_FeatureCommonInfo info{};
         info.PathListInfo.Path = paths;
         info.PathListInfo.Length = 1;
         info.LoggingInfo.LoggingCallback = NgxLog;
         info.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_OFF;
-        const wchar_t* dataDir = device.dataDir && *device.dataDir ? device.dataDir : paths[0];
+        const wchar_t* dataDir = dataDirectory && *dataDirectory ? dataDirectory : paths[0];
         CreateDirectoryW(dataDir, nullptr);
-        NVSDK_NGX_Result result = NVSDK_NGX_VULKAN_Init_with_ProjectID(NGX_PROJECT_ID, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "1.0", dataDir,
-                                                                        device.instance, device.physical, device.device,
-                                                                        device.getInstanceProcAddr, device.getDeviceProcAddr, &info,
-                                                                        NVSDK_NGX_Version_API);
+        NVSDK_NGX_Result result;
+#ifdef _WIN32
+        if (!vulkan)
+            result = NVSDK_NGX_D3D12_Init_with_ProjectID(NGX_PROJECT_ID, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "1.0", dataDir,
+                                                         static_cast<ID3D12Device*>(d3d12), &info, NVSDK_NGX_Version_API);
+        else
+#endif
+            result = NVSDK_NGX_VULKAN_Init_with_ProjectID(NGX_PROJECT_ID, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "1.0", dataDir, vulkan->instance,
+                                                          vulkan->physical, vulkan->device, vulkan->getInstanceProcAddr,
+                                                          vulkan->getDeviceProcAddr, &info, NVSDK_NGX_Version_API);
         char text[160];
         if (NVSDK_NGX_FAILED(result))
         {
@@ -195,8 +204,17 @@ namespace
             return false;
         }
         g_initialized = true;
-        g_device = device.device;
-        if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_GetCapabilityParameters(&g_parameters)) || !g_parameters)
+        g_d3d12 = !vulkan;
+        g_d3d12Device = d3d12;
+        g_device = vulkan ? vulkan->device : VK_NULL_HANDLE;
+        NVSDK_NGX_Result capability;
+#ifdef _WIN32
+        if (g_d3d12)
+            capability = NVSDK_NGX_D3D12_GetCapabilityParameters(&g_parameters);
+        else
+#endif
+            capability = NVSDK_NGX_VULKAN_GetCapabilityParameters(&g_parameters);
+        if (NVSDK_NGX_FAILED(capability) || !g_parameters)
         {
             g_parameters = nullptr;
             why = "no NGX capability parameters";
@@ -217,17 +235,43 @@ namespace
         return true;
     }
 
-    void StopNgx()
+    void ReleaseFeatureNow()
     {
         if (g_feature)
-            NVSDK_NGX_VULKAN_ReleaseFeature(g_feature);
+        {
+#ifdef _WIN32
+            if (g_d3d12)
+                NVSDK_NGX_D3D12_ReleaseFeature(g_feature);
+            else
+#endif
+                NVSDK_NGX_VULKAN_ReleaseFeature(g_feature);
+        }
         g_feature = nullptr;
-        if (g_parameters)
-            NVSDK_NGX_VULKAN_DestroyParameters(g_parameters);
+    }
+
+    void StopNgx()
+    {
+        ReleaseFeatureNow();
+#ifdef _WIN32
+        if (g_d3d12)
+        {
+            if (g_parameters)
+                NVSDK_NGX_D3D12_DestroyParameters(g_parameters);
+            if (g_initialized)
+                NVSDK_NGX_D3D12_Shutdown1(static_cast<ID3D12Device*>(g_d3d12Device));
+        }
+        else
+#endif
+        {
+            if (g_parameters)
+                NVSDK_NGX_VULKAN_DestroyParameters(g_parameters);
+            if (g_initialized)
+                NVSDK_NGX_VULKAN_Shutdown1(g_device);
+        }
         g_parameters = nullptr;
-        if (g_initialized)
-            NVSDK_NGX_VULKAN_Shutdown1(g_device);
         g_initialized = false;
+        g_d3d12 = false;
+        g_d3d12Device = nullptr;
         g_device = VK_NULL_HANDLE;
     }
 
@@ -253,6 +297,54 @@ namespace
     {
         VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         return NVSDK_NGX_Create_ImageView_Resource_VK(image.view, image.image, range, image.format, image.width, image.height, readWrite);
+    }
+
+    // The feature for this frame's sizes, mode and flags (an earlier one for other values is released
+    // first); `create` makes it on the API's command list. Same messages and warning cap for both APIs.
+    template <class Frame, class Create>
+    bool EnsureFeature(const Frame& frame, Create create)
+    {
+        int flags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure |
+                    (frame.depthInverted ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0);
+        uint32_t key[5] = { frame.renderWidth, frame.renderHeight, frame.outputWidth, frame.outputHeight,
+                            uint32_t(frame.quality) | (uint32_t(flags) << 8) };
+        if (g_feature && memcmp(key, g_featureKey, sizeof(key)) != 0)
+            ReleaseFeatureNow();
+        if (g_feature)
+            return true;
+        NVSDK_NGX_DLSS_Create_Params params{};
+        params.Feature.InWidth = frame.renderWidth;
+        params.Feature.InHeight = frame.renderHeight;
+        params.Feature.InTargetWidth = frame.outputWidth;
+        params.Feature.InTargetHeight = frame.outputHeight;
+        params.Feature.InPerfQualityValue = Quality(frame.quality);
+        params.InFeatureCreateFlags = flags;
+        // Presets: the DLL's defaults (transformer K for DLAA/quality/balanced, M/L for the
+        // performance modes in DLSS 4.5).
+        NVSDK_NGX_Result result = create(params);
+        if (NVSDK_NGX_FAILED(result))
+        {
+            static uint32_t logged;
+            if (logged++ < 4)
+                Log("[gpu] DLSS: could not create the feature %ux%u -> %ux%u (0x%08X)", frame.renderWidth, frame.renderHeight,
+                    frame.outputWidth, frame.outputHeight, uint32_t(result));
+            g_feature = nullptr;
+            return false;
+        }
+        memcpy(g_featureKey, key, sizeof(key));
+        Log("[gpu] DLSS feature created: %ux%u -> %ux%u, %s", frame.renderWidth, frame.renderHeight, frame.outputWidth, frame.outputHeight,
+            QualityName(frame.quality));
+        return true;
+    }
+
+    bool EvaluateFailed(NVSDK_NGX_Result result)
+    {
+        if (!NVSDK_NGX_FAILED(result))
+            return false;
+        static uint32_t logged;
+        if (logged++ < 4)
+            Log("[gpu] DLSS: evaluation failed (0x%08X)", uint32_t(result));
+        return true;
     }
 
     void Copy(char* out, uint32_t size, const std::string& text)
@@ -284,7 +376,7 @@ CRASH_DLSS_EXPORT int32_t CrashDlss_Init(const CrashDlssDevice* device)
 {
     g_log = device->log;
     std::string why;
-    if (StartNgx(*device, why))
+    if (StartNgx(device->featureDir, device->dataDir, device, nullptr, why))
         return 1;
     Log("[gpu] DLSS: %s", why.c_str());
     return 0;
@@ -294,40 +386,10 @@ CRASH_DLSS_EXPORT int32_t CrashDlss_Evaluate(const CrashDlssFrame* frame)
 {
     if (!g_parameters)
         return 0;
-    int flags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure |
-                (frame->depthInverted ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0);
-    uint32_t key[5] = { frame->renderWidth, frame->renderHeight, frame->outputWidth, frame->outputHeight,
-                        uint32_t(frame->quality) | (uint32_t(flags) << 8) };
-    if (g_feature && memcmp(key, g_featureKey, sizeof(key)) != 0)
-    {
-        NVSDK_NGX_VULKAN_ReleaseFeature(g_feature);
-        g_feature = nullptr;
-    }
-    if (!g_feature)
-    {
-        NVSDK_NGX_DLSS_Create_Params create{};
-        create.Feature.InWidth = frame->renderWidth;
-        create.Feature.InHeight = frame->renderHeight;
-        create.Feature.InTargetWidth = frame->outputWidth;
-        create.Feature.InTargetHeight = frame->outputHeight;
-        create.Feature.InPerfQualityValue = Quality(frame->quality);
-        create.InFeatureCreateFlags = flags;
-        // Presets: the DLL's defaults (transformer K for DLAA/quality/balanced, M/L for the
-        // performance modes in DLSS 4.5).
-        NVSDK_NGX_Result result = NGX_VULKAN_CREATE_DLSS_EXT1(g_device, frame->commandBuffer, 1, 1, &g_feature, g_parameters, &create);
-        if (NVSDK_NGX_FAILED(result))
-        {
-            static uint32_t logged;
-            if (logged++ < 4)
-                Log("[gpu] DLSS: could not create the feature %ux%u -> %ux%u (0x%08X)", frame->renderWidth, frame->renderHeight,
-                    frame->outputWidth, frame->outputHeight, uint32_t(result));
-            g_feature = nullptr;
-            return 0;
-        }
-        memcpy(g_featureKey, key, sizeof(key));
-        Log("[gpu] DLSS feature created: %ux%u -> %ux%u, %s", frame->renderWidth, frame->renderHeight, frame->outputWidth,
-            frame->outputHeight, QualityName(frame->quality));
-    }
+    if (!EnsureFeature(*frame, [&](NVSDK_NGX_DLSS_Create_Params& create) {
+            return NGX_VULKAN_CREATE_DLSS_EXT1(g_device, frame->commandBuffer, 1, 1, &g_feature, g_parameters, &create);
+        }))
+        return 0;
     NVSDK_NGX_Resource_VK color = Resource(frame->color, false), depth = Resource(frame->depth, false),
                           motion = Resource(frame->motion, false), output = Resource(frame->output, true);
     NVSDK_NGX_VK_DLSS_Eval_Params eval{};
@@ -343,22 +405,64 @@ CRASH_DLSS_EXPORT int32_t CrashDlss_Evaluate(const CrashDlssFrame* frame)
     eval.InMVScaleX = float(frame->renderWidth);
     eval.InMVScaleY = float(frame->renderHeight);
     eval.InFrameTimeDeltaInMsec = frame->frameTimeMs;
-    NVSDK_NGX_Result result = NGX_VULKAN_EVALUATE_DLSS_EXT(frame->commandBuffer, g_feature, g_parameters, &eval);
-    if (NVSDK_NGX_FAILED(result))
-    {
-        static uint32_t logged;
-        if (logged++ < 4)
-            Log("[gpu] DLSS: evaluation failed (0x%08X)", uint32_t(result));
-        return 0;
-    }
-    return 1;
+    return EvaluateFailed(NGX_VULKAN_EVALUATE_DLSS_EXT(frame->commandBuffer, g_feature, g_parameters, &eval)) ? 0 : 1;
 }
+
+#ifdef _WIN32
+// Direct3D 12: NGX's own helpers for it (nvsdk_ngx_helpers_d3d.h) are not in the SDK files this project
+// takes, so the parameters they would set are set here, the same ones as the Vulkan helpers do.
+CRASH_DLSS_EXPORT int32_t CrashDlss_InitD3D12(const CrashDlssD3D12Device* device)
+{
+    g_log = device->log;
+    std::string why;
+    if (StartNgx(device->featureDir, device->dataDir, nullptr, device->device, why))
+        return 1;
+    Log("[gpu] DLSS: %s", why.c_str());
+    return 0;
+}
+
+CRASH_DLSS_EXPORT int32_t CrashDlss_EvaluateD3D12(const CrashDlssD3D12Frame* frame)
+{
+    if (!g_parameters || !g_d3d12)
+        return 0;
+    auto commandList = static_cast<ID3D12GraphicsCommandList*>(frame->commandList);
+    NVSDK_NGX_Parameter* p = g_parameters;
+    if (!EnsureFeature(*frame, [&](NVSDK_NGX_DLSS_Create_Params& create) {
+            NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_CreationNodeMask, 1);
+            NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_VisibilityNodeMask, 1);
+            NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_Width, create.Feature.InWidth);
+            NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_Height, create.Feature.InHeight);
+            NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_OutWidth, create.Feature.InTargetWidth);
+            NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_OutHeight, create.Feature.InTargetHeight);
+            NVSDK_NGX_Parameter_SetI(p, NVSDK_NGX_Parameter_PerfQualityValue, create.Feature.InPerfQualityValue);
+            NVSDK_NGX_Parameter_SetI(p, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, create.InFeatureCreateFlags);
+            NVSDK_NGX_Parameter_SetI(p, NVSDK_NGX_Parameter_DLSS_Enable_Output_Subrects, 0);
+            return NVSDK_NGX_D3D12_CreateFeature(commandList, NVSDK_NGX_Feature_SuperSampling, p, &g_feature);
+        }))
+        return 0;
+    NVSDK_NGX_Parameter_SetD3d12Resource(p, NVSDK_NGX_Parameter_Color, static_cast<ID3D12Resource*>(frame->color));
+    NVSDK_NGX_Parameter_SetD3d12Resource(p, NVSDK_NGX_Parameter_Output, static_cast<ID3D12Resource*>(frame->output));
+    NVSDK_NGX_Parameter_SetD3d12Resource(p, NVSDK_NGX_Parameter_Depth, static_cast<ID3D12Resource*>(frame->depth));
+    NVSDK_NGX_Parameter_SetD3d12Resource(p, NVSDK_NGX_Parameter_MotionVectors, static_cast<ID3D12Resource*>(frame->motion));
+    NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_Jitter_Offset_X, frame->jitterX);
+    NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_Jitter_Offset_Y, frame->jitterY);
+    NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_Sharpness, 0.0f);
+    NVSDK_NGX_Parameter_SetI(p, NVSDK_NGX_Parameter_Reset, frame->reset ? 1 : 0);
+    // Motion vectors are in UV units: scale to render pixels.
+    NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_MV_Scale_X, float(frame->renderWidth));
+    NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_MV_Scale_Y, float(frame->renderHeight));
+    NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, frame->frameTimeMs);
+    NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, frame->renderWidth);
+    NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, frame->renderHeight);
+    NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
+    NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
+    return EvaluateFailed(NVSDK_NGX_D3D12_EvaluateFeature_C(commandList, g_feature, p, nullptr)) ? 0 : 1;
+}
+#endif
 
 CRASH_DLSS_EXPORT void CrashDlss_ReleaseFeature()
 {
-    if (g_feature)
-        NVSDK_NGX_VULKAN_ReleaseFeature(g_feature);
-    g_feature = nullptr;
+    ReleaseFeatureNow();
 }
 
 CRASH_DLSS_EXPORT void CrashDlss_Shutdown()
@@ -494,7 +598,7 @@ CRASH_DLSS_EXPORT int32_t CrashDlss_Probe(const wchar_t* featureDir, const wchar
         else
         {
             CrashDlssDevice info{ instance, physical, device, gipa, vkGetDeviceProcAddr, dataDir, featureDir, nullptr };
-            available = StartNgx(info, why) ? 1 : 0;
+            available = StartNgx(featureDir, dataDir, &info, nullptr, why) ? 1 : 0;
             StopNgx();
             auto vkDestroyDevice = reinterpret_cast<PFN_vkDestroyDevice>(vkGetDeviceProcAddr(device, "vkDestroyDevice"));
             vkDestroyDevice(device, nullptr);

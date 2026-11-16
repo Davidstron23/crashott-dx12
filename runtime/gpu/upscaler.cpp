@@ -11,6 +11,10 @@
 #include "dlss_module/crash_dlss.h"
 #include "../platform/platform.h"
 
+#if defined(_WIN32) && !defined(CRASH_NO_WIN32_HEADERS)
+#include <dxgi1_6.h>  // the Direct3D 12 adapter's vendor
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -28,6 +32,10 @@ namespace gpu::upscaler
     namespace
     {
         rhi::Device* g_rhi = nullptr;
+        // The renderer's API: Direct3D 12 (g_d3d12Device, g_adapter) or Vulkan (the objects below).
+        bool g_d3d12 = false;
+        void* g_d3d12Device = nullptr;  // ID3D12Device
+        void* g_adapter = nullptr;      // IDXGIAdapter1
         // The Vulkan objects the SDKs work on (the renderer's own device).
         VkInstance g_instance = VK_NULL_HANDLE;
         VkPhysicalDevice g_physical = VK_NULL_HANDLE;
@@ -40,10 +48,8 @@ namespace gpu::upscaler
         // chosen in settings.toml is probed at startup, the other one when the settings screen first
         // asks (Available).
         bool g_dlssProbed = false, g_fsrProbed = false;
-        // The renderer's API has no upscaler path (DisableForBackend): Available answers with the
-        // launcher's rule, calculated once into g_dlssAvailable / g_fsrAvailable.
-        bool g_disabledForBackend = false;
         settings::Upscaler g_active = settings::Upscaler::Off;
+        settings::Upscaler g_chosen = settings::Upscaler::Off;  // Chosen()
         std::string g_name = "off";
 
         std::filesystem::path ExeDirectory()
@@ -110,6 +116,7 @@ namespace gpu::upscaler
         // (inputs SHADER_READ_ONLY_OPTIMAL, the output GENERAL).
         struct NativeTexture
         {
+            void* resource = nullptr;  // ID3D12Resource (Direct3D 12)
             VkImage image = VK_NULL_HANDLE;
             VkImageView view = VK_NULL_HANDLE;
             VkFormat format = VK_FORMAT_UNDEFINED;
@@ -119,6 +126,7 @@ namespace gpu::upscaler
 
         struct NativeFrame
         {
+            void* commandList;  // ID3D12GraphicsCommandList (Direct3D 12)
             VkCommandBuffer commandBuffer;
             NativeTexture color, depth, motion, output;
         };
@@ -140,7 +148,8 @@ namespace gpu::upscaler
         {
             g_rhi->PrepareNative(texture, state);
             NativeTexture native;
-            native.image = static_cast<VkImage>(g_rhi->NativeTexture(texture));
+            native.resource = g_rhi->NativeTexture(texture);
+            native.image = static_cast<VkImage>(native.resource);
             native.view = static_cast<VkImageView>(g_rhi->NativeView(texture));
             native.dxgi = texture->desc.format;
             native.format = VulkanFormat(texture->desc.format);
@@ -157,7 +166,8 @@ namespace gpu::upscaler
             native.motion = Native(frame.motion, rhi::NativeState::ShaderRead);
             native.output = Native(frame.output, rhi::NativeState::UnorderedAccess);
             // Native() ends the rendering instance and flushes the barriers above.
-            native.commandBuffer = static_cast<VkCommandBuffer>(g_rhi->Native().commandList);
+            native.commandList = g_rhi->Native().commandList;
+            native.commandBuffer = static_cast<VkCommandBuffer>(native.commandList);
             return native;
         }
 
@@ -170,6 +180,8 @@ namespace gpu::upscaler
             CrashDlss_EvaluateFn Evaluate;
             CrashDlss_ReleaseFeatureFn ReleaseFeature;
             CrashDlss_ShutdownFn Shutdown;
+            CrashDlss_InitD3D12Fn InitD3D12;          // optional: a build without Direct3D 12 (the installer's) has none
+            CrashDlss_EvaluateD3D12Fn EvaluateD3D12;
         } g_dlssApi{};
         bool g_ngxInitialized = false;
 
@@ -202,6 +214,8 @@ namespace gpu::upscaler
             g_dlssApi.Evaluate = reinterpret_cast<CrashDlss_EvaluateFn>(plat::FindSymbol(module, "CrashDlss_Evaluate"));
             g_dlssApi.ReleaseFeature = reinterpret_cast<CrashDlss_ReleaseFeatureFn>(plat::FindSymbol(module, "CrashDlss_ReleaseFeature"));
             g_dlssApi.Shutdown = reinterpret_cast<CrashDlss_ShutdownFn>(plat::FindSymbol(module, "CrashDlss_Shutdown"));
+            g_dlssApi.InitD3D12 = reinterpret_cast<CrashDlss_InitD3D12Fn>(plat::FindSymbol(module, "CrashDlss_InitD3D12"));
+            g_dlssApi.EvaluateD3D12 = reinterpret_cast<CrashDlss_EvaluateD3D12Fn>(plat::FindSymbol(module, "CrashDlss_EvaluateD3D12"));
             if (!version || version() != CRASH_DLSS_API_VERSION || !g_dlssApi.RequiredExtensions || !g_dlssApi.Init || !g_dlssApi.Evaluate ||
                 !g_dlssApi.ReleaseFeature || !g_dlssApi.Shutdown)
             {
@@ -222,6 +236,13 @@ namespace gpu::upscaler
             uint32_t forced = settings::ForcedGpuVendor();
             if (forced)
                 return forced;
+#if defined(_WIN32) && !defined(CRASH_NO_WIN32_HEADERS)
+            if (g_d3d12)
+            {
+                DXGI_ADAPTER_DESC1 desc{};
+                return g_adapter && SUCCEEDED(static_cast<IDXGIAdapter1*>(g_adapter)->GetDesc1(&desc)) ? desc.VendorId : 0;
+            }
+#endif
             auto getProperties =
                 g_getInstanceProcAddr ? reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(g_getInstanceProcAddr(g_instance, "vkGetPhysicalDeviceProperties"))
                                       : nullptr;
@@ -253,11 +274,17 @@ namespace gpu::upscaler
                 Log("[gpu] DLSS: %s not found next to the exe", DLSS_MODULE);
                 return;
             }
+            if (g_d3d12 && (!g_dlssApi.InitD3D12 || !g_dlssApi.EvaluateD3D12))
+            {
+                Log("[gpu] DLSS: %s has no Direct3D 12 support (a build older than this exe)", DLSS_MODULE);
+                return;
+            }
             std::filesystem::create_directories(dataDir, error);
             std::wstring exeDir = ExeDirectory().wstring();
             CrashDlssDevice device{ g_instance, g_physical, g_device, g_getInstanceProcAddr, g_getDeviceProcAddr, dataDir.c_str(), exeDir.c_str(), DlssLog };
+            CrashDlssD3D12Device device12{ g_d3d12Device, dataDir.c_str(), exeDir.c_str(), DlssLog };
             g_ngxInitialized = true;  // Shutdown releases what Init started, even when it failed
-            if (!g_dlssApi.Init(&device))
+            if (!(g_d3d12 ? g_dlssApi.InitD3D12(&device12) : g_dlssApi.Init(&device)))
                 return;
             g_dlssAvailable = true;
             std::string version = NgxDlssVersion();
@@ -272,22 +299,37 @@ namespace gpu::upscaler
         bool EvaluateDlss(const Frame& frame)
         {
             NativeFrame native = Natives(frame);
+            // The fields both APIs' frames share.
+            auto fill = [&](auto& dlss) {
+                dlss.renderWidth = frame.renderWidth;
+                dlss.renderHeight = frame.renderHeight;
+                dlss.outputWidth = frame.outputWidth;
+                dlss.outputHeight = frame.outputHeight;
+                dlss.jitterX = frame.jitterX;
+                dlss.jitterY = frame.jitterY;
+                dlss.frameTimeMs = frame.frameTimeMs;
+                dlss.quality = int32_t(frame.quality);
+                dlss.reset = frame.reset ? 1 : 0;
+                dlss.depthInverted = frame.depthInverted ? 1 : 0;
+            };
+            if (g_d3d12)
+            {
+                CrashDlssD3D12Frame dlss{};
+                dlss.commandList = native.commandList;
+                dlss.color = native.color.resource;
+                dlss.depth = native.depth.resource;
+                dlss.motion = native.motion.resource;
+                dlss.output = native.output.resource;
+                fill(dlss);
+                return g_dlssApi.EvaluateD3D12(&dlss) != 0;
+            }
             CrashDlssFrame dlss{};
             dlss.commandBuffer = native.commandBuffer;
             dlss.color = DlssImage(native.color);
             dlss.depth = DlssImage(native.depth);
             dlss.motion = DlssImage(native.motion);
             dlss.output = DlssImage(native.output);
-            dlss.renderWidth = frame.renderWidth;
-            dlss.renderHeight = frame.renderHeight;
-            dlss.outputWidth = frame.outputWidth;
-            dlss.outputHeight = frame.outputHeight;
-            dlss.jitterX = frame.jitterX;
-            dlss.jitterY = frame.jitterY;
-            dlss.frameTimeMs = frame.frameTimeMs;
-            dlss.quality = int32_t(frame.quality);
-            dlss.reset = frame.reset ? 1 : 0;
-            dlss.depthInverted = frame.depthInverted ? 1 : 0;
+            fill(dlss);
             return g_dlssApi.Evaluate(&dlss) != 0;
         }
 
@@ -518,29 +560,9 @@ namespace gpu::upscaler
         (void)device;
     }
 
-    void DisableForBackend()
-    {
-        // The launcher's rule (launcher.cpp, "DLSS needs an NVIDIA RTX GPU..."), without NGX's own check
-        // (--probe-dlss belongs to the launcher): the files next to the exe and the GPU.
-        gpu::GpuInfo info = gpu::DetectGpu();
-        g_dlssAvailable = info.vendor == settings::VENDOR_NVIDIA && std::filesystem::exists(ExeDirectory() / DLSS_MODULE) &&
-                          std::filesystem::exists(NgxDlssFile());
-#if CRASH_HAVE_FSR
-        g_fsrAvailable = std::filesystem::exists(ExeDirectory() / FFX_MODULE) && (!info.vulkan || info.fsrExtensions);
-#else
-        g_fsrAvailable = false;
-#endif
-        g_dlssProbed = g_fsrProbed = g_disabledForBackend = true;
-        g_active = settings::Upscaler::Off;
-        g_name = "off";
-        Log("[gpu] Direct3D 12: GPU %s (%s%s) by the launcher's rule: DLSS %s, FSR %s", info.name.empty() ? "?" : info.name.c_str(),
-            settings::GpuVendorName(info.vendor), info.forced ? ", CRASH_GPU_VENDOR" : "", g_dlssAvailable ? "yes" : "no",
-            g_fsrAvailable ? "yes" : "no");
-    }
-
     bool Available(settings::Upscaler upscaler)
     {
-        if (!g_device && !g_disabledForBackend)
+        if (!g_rhi)
             return false;
         int64_t start, end, frequency;
         start = int64_t(plat::PerfCounter());
@@ -573,15 +595,31 @@ namespace gpu::upscaler
         }
     }
 
-    void Init(rhi::Device* device, settings::Upscaler wanted, const std::wstring& dataDir)
+    void Init(rhi::Device* device, bool d3d12, settings::Upscaler wanted, const std::wstring& dataDir)
     {
         g_rhi = device;
+        g_d3d12 = d3d12;
         rhi::NativeHandles native = device->Native();
-        g_instance = static_cast<VkInstance>(native.instance);
-        g_physical = static_cast<VkPhysicalDevice>(native.physicalDevice);
-        g_device = static_cast<VkDevice>(native.device);
-        g_getInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(native.getInstanceProcAddr);
-        g_getDeviceProcAddr = reinterpret_cast<PFN_vkGetDeviceProcAddr>(native.getDeviceProcAddr);
+        if (d3d12)
+        {
+            g_d3d12Device = native.device;
+            g_adapter = native.physicalDevice;
+            // FSR does not run on Direct3D 12 yet (issue #7), but SETTINGS still offers it by the launcher's rule
+            // (the files next to the exe and the GPU), without probing it.
+            g_fsrProbed = true;
+#if CRASH_HAVE_FSR
+            gpu::GpuInfo info = gpu::DetectGpu();
+            g_fsrAvailable = std::filesystem::exists(ExeDirectory() / FFX_MODULE) && (!info.vulkan || info.fsrExtensions);
+#endif
+        }
+        else
+        {
+            g_instance = static_cast<VkInstance>(native.instance);
+            g_physical = static_cast<VkPhysicalDevice>(native.physicalDevice);
+            g_device = static_cast<VkDevice>(native.device);
+            g_getInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(native.getInstanceProcAddr);
+            g_getDeviceProcAddr = reinterpret_cast<PFN_vkGetDeviceProcAddr>(native.getDeviceProcAddr);
+        }
         g_dataDir = dataDir;
         // settings.toml asks for DLSS where it can't run (a settings.toml copied from another PC, a
         // new GPU): FSR instead when it can run, else no upscaler. The file is left as it is.
@@ -597,11 +635,11 @@ namespace gpu::upscaler
 
     void Select(settings::Upscaler wanted)
     {
-        if (g_disabledForBackend)
+        settings::Upscaler requested = wanted;
+        if (g_d3d12 && wanted == settings::Upscaler::Fsr)
         {
-            g_active = settings::Upscaler::Off;
-            g_name = "off";
-            return;
+            Log("[gpu] Direct3D 12: upscaler %s off (Vulkan only for now); settings.toml keeps it", settings::UpscalerName(wanted));
+            wanted = settings::Upscaler::Off;
         }
         g_active = Available(wanted) ? wanted : settings::Upscaler::Off;
         if (wanted != settings::Upscaler::Off && g_active == settings::Upscaler::Off)
@@ -613,6 +651,8 @@ namespace gpu::upscaler
         else if (g_active == settings::Upscaler::Fsr)
             g_name = "FSR " + g_fsrVersionName;
 #endif
+        // Direct3D 12 keeps FSR chosen (SETTINGS shows it, nothing is rewritten) although it does not run.
+        g_chosen = g_d3d12 && requested == settings::Upscaler::Fsr ? requested : g_active;
         // The one not in use gives its memory back (the GPU is idle: the renderer waited).
         if (g_active != settings::Upscaler::Dlss && g_dlssAvailable)
             g_dlssApi.ReleaseFeature();
@@ -640,6 +680,11 @@ namespace gpu::upscaler
     settings::Upscaler Active()
     {
         return g_active;
+    }
+
+    settings::Upscaler Chosen()
+    {
+        return g_chosen;
     }
 
     const std::string& ActiveName()

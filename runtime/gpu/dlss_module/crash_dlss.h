@@ -4,7 +4,8 @@
 //
 // The DLL is our code (crash_dlss.cpp, MIT) linked with NVIDIA's static NGX library
 // (thirdparty/dlss/lib/nvsdk_ngx_s.lib) and loaded at run time, next to nvngx_dlss.dll:
-//   - CrashRecomp.exe (gpu/upscaler.cpp) runs DLSS on the renderer's own Vulkan device;
+//   - CrashRecomp.exe (gpu/upscaler.cpp) runs DLSS on the renderer's own Vulkan or Direct3D 12
+//     device;
 //   - CrashLauncher.exe and CrashSetup.exe ask CrashDlss_Probe whether this PC can run DLSS (an
 //     NVIDIA RTX GPU whose driver has DLSS), through NGX's own capability check on a Vulkan device
 //     of their own, so that DLSS is offered only where it works.
@@ -57,6 +58,29 @@ extern "C"
         int32_t depthInverted;
     };
 
+    // Direct3D 12 (Windows): two more entry points on top of API 1, optional so that a CrashDlss.dll built
+    // without them (the installer's) still serves Vulkan. ReleaseFeature and Shutdown serve both.
+    struct CrashDlssD3D12Device
+    {
+        void* device;               // ID3D12Device
+        const wchar_t* dataDir;     // where NGX may write its logs
+        const wchar_t* featureDir;  // the folder with nvngx_dlss.dll
+        CrashDlssLogFn log;         // NGX's and our messages (may be null)
+    };
+
+    // The resources are ID3D12Resource: inputs in the shader-resource states, the output unordered access.
+    struct CrashDlssD3D12Frame
+    {
+        void* commandList;  // ID3D12GraphicsCommandList, being recorded
+        void *color, *depth, *motion, *output;
+        uint32_t renderWidth, renderHeight, outputWidth, outputHeight;
+        float jitterX, jitterY;  // render pixels
+        float frameTimeMs;
+        int32_t quality;
+        int32_t reset;
+        int32_t depthInverted;
+    };
+
     typedef uint32_t (*CrashDlss_ApiVersionFn)();
     // NGX's Vulkan extensions (instance, device), before the device is created. 1 on success.
     typedef int32_t (*CrashDlss_RequiredExtensionsFn)(uint32_t* instanceCount, const char* const** instanceNames, uint32_t* deviceCount,
@@ -67,6 +91,8 @@ extern "C"
     typedef int32_t (*CrashDlss_EvaluateFn)(const CrashDlssFrame* frame);
     typedef void (*CrashDlss_ReleaseFeatureFn)();  // frees the feature (GPU idle)
     typedef void (*CrashDlss_ShutdownFn)();        // and NGX
+    typedef int32_t (*CrashDlss_InitD3D12Fn)(const CrashDlssD3D12Device* device);
+    typedef int32_t (*CrashDlss_EvaluateD3D12Fn)(const CrashDlssD3D12Frame* frame);
     // Standalone: a Vulkan instance and device of its own on this PC's NVIDIA GPU, NGX's capability
     // check, then everything is destroyed again. 1 if DLSS can run; gpuName gets the GPU (or ""),
     // reason why not. featureDir: the folder with nvngx_dlss.dll; dataDir: NGX's logs (may be null).

@@ -2,7 +2,7 @@
 
 // Temporal upscaling / anti-aliasing of the 3D scene (settings [graphics] upscaler):
 //
-//   - NVIDIA DLSS Super Resolution / DLAA, through NGX's Vulkan API in CrashDlss.dll
+//   - NVIDIA DLSS Super Resolution / DLAA, through NGX's Vulkan or Direct3D 12 API in CrashDlss.dll
 //     (dlss_module/crash_dlss.h, loaded at run time) and nvngx_dlss.dll, both next to the exe.
 //     NVIDIA RTX GPUs only: on other GPUs it isn't even loaded (CRASH_GPU_VENDOR pretends one).
 //   - AMD FSR 3.1 upscaler, through the FidelityFX API's Vulkan backend (thirdparty/fsr: the signed
@@ -30,14 +30,11 @@ namespace gpu::upscaler
     // support it). Known once the renderer has started; false before.
     bool Available(settings::Upscaler upscaler);
 
-    // The renderer's API has no upscaler path yet (Direct3D 12, issues #6/#7): Active() stays Off and Init
-    // is not called; Available() answers with the launcher's rule (gpu_detect.h), so the settings screen
-    // greys out only what this PC can't run and shows the configured upscaler as it is.
-    void DisableForBackend();
-
-    // Renderer startup: probes DLSS and FSR on `device` (for Available) and chooses `wanted` if
-    // it is available. `dataDir`: where NGX may write its logs.
-    void Init(rhi::Device* device, settings::Upscaler wanted, const std::wstring& dataDir);
+    // Renderer startup: probes DLSS on `device` (for Available; FSR too on Vulkan) and chooses `wanted` if
+    // it is available. `d3d12`: the device is the Direct3D 12 one. FSR does not run on Direct3D 12 yet
+    // (issue #7): SETTINGS offers it by the launcher's rule (gpu_detect.h) and Active() stays Off for it.
+    // `dataDir`: where NGX may write its logs.
+    void Init(rhi::Device* device, bool d3d12, settings::Upscaler wanted, const std::wstring& dataDir);
     // Switches to `wanted` (Off if it isn't available) and releases the other one's feature or
     // context. Only with the GPU idle (the renderer's Reconfigure).
     void Select(settings::Upscaler wanted);
@@ -45,6 +42,9 @@ namespace gpu::upscaler
 
     // The upscaler that runs (Off if none was wanted or the wanted one isn't available).
     settings::Upscaler Active();
+    // The one the player sees chosen after DLSS fell back: Active(), except that with Direct3D 12 FSR stays
+    // FSR although it does not run.
+    settings::Upscaler Chosen();
     // Name and version for the log and the overlay, e.g. "DLSS 310.9.16" or "FSR 3.1.5".
     const std::string& ActiveName();
 
