@@ -794,28 +794,60 @@ expect = { exit = ["timeout"], restarts = 1, events = ["main_menu#2", "hub"], lo
 [profiles.configuracoes_resolucao]
 description = "SETTINGS: resolução 1920x1080 e DLSS Qualidade aplicados ao fechar a tela, sem reiniciar; depois LOAD GAME até a fase"
 test = true
-timeout = 55
+timeout = 60
 audio = false
 userdata_mode = "copy"
 screenshot_overlay = true
 skip_intros = true
+# fps_limit=30 e CRASH_NO_HID=1: sem isso os apertos do menu se perdem (fps_limit=0 da base) e um controle fisico atrapalha.
+env = { CRASH_NO_HID = "1", CRASH_SETTINGS = "video.fps_limit=30" }
 # A partir do menu: DOWN x3, A = SETTINGS (abre na aba JOGO); RB x2 = VÍDEO; DOWN = RESOLUÇÃO;
 # RIGHT x2 = 1920x1080; RB = GRÁFICOS; RIGHT = DLSS (a primeira vez a tela trava ~1,2 s sondando o
-# DLSS: folga de 2 s); DOWN, RIGHT = modo QUALIDADE; B = fecha (sem pergunta: nada precisa
+# DLSS: o sondeio congela a tela ~2,2 s neste PC, e as pulsações de SETTINGS vão 2 s mais tarde para
+# não caírem no tranco); DOWN, RIGHT = modo QUALIDADE; B = fecha (sem pergunta: nada precisa
 # reiniciar) e o renderer recria os alvos; DOWN, A = LOAD GAME; slot 1, CONTINUE e Y nas telas deles.
 # Capturas (com o overlay completo: a linha RENDER mostra a resolução e o DLSS): aba GRÁFICOS,
 # menu depois de fechar, fase.
 input = [
     ["@main_menu"], [2, "DOWN"], [3, "DOWN"], [4, "DOWN"], [5, "A"],
-    [7, "RB"], [7.6, "RB"], [8.2, "DOWN"], [8.8, "RIGHT"], [9.4, "RIGHT"],
-    [10.2, "RB"], [10.8, "RIGHT"], [13.1, "DOWN"], [13.8, "RIGHT"],
-    [14.5, "SHOT"], [15, "B"], [17, "SHOT"], [17.5, "DOWN"], [18.5, "A"],
+    [9, "RB"], [9.6, "RB"], [10.2, "DOWN"], [10.8, "RIGHT"], [11.4, "RIGHT"],
+    [12.2, "RB"], [12.8, "RIGHT"], [15.1, "DOWN"], [15.8, "RIGHT"],
+    [16.5, "SHOT"], [17, "B"], [19, "SHOT"], [19.5, "DOWN"], [20.5, "A"],
     ["@save_slots"], [1.5, "A"],
     ["@load_complete"], [1, "A"],
     ["@hub"], [2, "Y"],
     ["@gameplay_ready"], [3, "SHOT"],
 ]
 expect = { exit = ["timeout"], restarts = 0, events = ["gameplay_ready"], log_absent = ['\[fatal\]', '\[crash\]', 'restart needed'], log_contains = ['video\.resolution -> 1920x1080', 'graphics\.upscaler -> DLSS', 'renderer options changed', 'reconfigured: internal resolution 1920x1080 \(1\.50x\), DLSS', 'DLSS feature created', 'XamContentCreateEx\(.*\(opened\)'] }
+
+[profiles.configuracoes_resolucao_fsr]
+description = "SETTINGS: resolução 1920x1080 e FSR 3.1 Qualidade aplicados ao fechar a tela, sem reiniciar; depois LOAD GAME até a fase; sem renderer no perfil: use --set renderer=vulkan|d3d12"
+test = true
+timeout = 60
+audio = false
+userdata_mode = "copy"
+screenshot_overlay = true
+skip_intros = true
+# fps_limit=30 e CRASH_NO_HID=1: sem isso os apertos do menu se perdem (fps_limit=0 da base) e um controle fisico atrapalha.
+env = { CRASH_NO_HID = "1", CRASH_SETTINGS = "video.fps_limit=30" }
+# A partir do menu: DOWN x3, A = SETTINGS (abre na aba JOGO); RB x2 = VÍDEO; DOWN = RESOLUÇÃO;
+# RIGHT x2 = 1920x1080; RB = GRÁFICOS; RIGHT x2 = FSR 3.1 (a ordem é OFF, DLSS, FSR; a primeira vez
+# a tela trava com o sondeio do DLSS: congela a tela ~2,2 s neste PC, e as pulsações de SETTINGS vão 2 s mais tarde para
+# não caírem no tranco); DOWN, RIGHT = modo QUALIDADE; B = fecha (sem pergunta: nada precisa
+# reiniciar) e o renderer recria os alvos; DOWN, A = LOAD GAME; slot 1, CONTINUE e Y nas telas deles.
+# Capturas (com o overlay completo: a linha RENDER mostra a resolução e o FSR): aba GRÁFICOS,
+# menu depois de fechar, fase.
+input = [
+    ["@main_menu"], [2, "DOWN"], [3, "DOWN"], [4, "DOWN"], [5, "A"],
+    [9, "RB"], [9.6, "RB"], [10.2, "DOWN"], [10.8, "RIGHT"], [11.4, "RIGHT"],
+    [12.2, "RB"], [12.8, "RIGHT"], [13.4, "RIGHT"], [15.1, "DOWN"], [15.8, "RIGHT"],
+    [16.5, "SHOT"], [17, "B"], [19, "SHOT"], [19.5, "DOWN"], [20.5, "A"],
+    ["@save_slots"], [1.5, "A"],
+    ["@load_complete"], [1, "A"],
+    ["@hub"], [2, "Y"],
+    ["@gameplay_ready"], [3, "SHOT"],
+]
+expect = { exit = ["timeout"], restarts = 0, events = ["gameplay_ready"], log_absent = ['\[fatal\]', '\[crash\]', 'restart needed'], log_contains = ['video\.resolution -> 1920x1080', 'graphics\.upscaler -> FSR', 'renderer options changed', 'reconfigured: internal resolution 1920x1080 \(1\.50x\), FSR', 'FSR [\d.]+ upscaler created: \d+x\d+ -> 1920x1080', 'XamContentCreateEx\(.*\(opened\)'] }
 
 [profiles.sair_do_jogo]
 description = "SAIR DO JOGO (EXIT GAME, 5º item do menu principal): fecha o jogo com código 0"
