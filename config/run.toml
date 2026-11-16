@@ -557,6 +557,18 @@ input = [["@cinematic_skipped"], [0.5, "SHOT"], ["@gameplay_ready"], [0.5, "SHOT
 parity = ["gameplay_ready+0.5", "gameplay_ready+2.5", "gameplay_ready+7.5"]
 expect = { exit = ["timeout"], events = ["level_start", "level_ready", "cinematic", "cinematic_skipped", "cinematic_done", "gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]'], log_contains = ['SkipToLevel, StartLevel 0 L1_E1'] }
 
+[profiles.renderizador_dlss]
+description = "Vila sem cena com DLSS nativo (DLAA) por CRASH_SETTINGS, anda e pausa; sem renderer no perfil: use --set renderer=vulkan|d3d12 (e o modo em CRASH_SETTINGS, graphics.upscaler_quality); compare as capturas lado a lado (DLSS e temporal: sem comparacao exata)"
+test = false
+timeout = 45
+audio = false
+userdata_mode = "copy"
+boot = "level:L1_E1"
+skip_cinematics = true
+env = { CRASH_NO_HID = "1", CRASH_SETTINGS = "graphics.upscaler=dlss;graphics.upscaler_quality=native" }
+input = [["@cinematic_skipped"], [0.5, "SHOT"], ["@gameplay_ready"], [0.5, "SHOT"], [1, "LS", 0, 1, 2.5], [4, "SHOT"], [6, "START"], [7.5, "SHOT"], [9, "START"]]
+expect = { exit = ["timeout"], events = ["gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]', 'DLSS: could not', 'evaluation failed'], log_contains = ['\[gpu\] DLSS available \(', '\[gpu\] dlss probed in \d+ ms', '\[gpu\] DLSS feature created: \d+x\d+ -> \d+x\d+, native', '\[gpu\] temporal upscaling \(DLSS '] }
+
 [profiles.coop_p2]
 description = "Co-op local: boot direto na vila L1_E1 sem a cena; um segundo controle virtual (entradas P2_ do script) entra com B (JOIN GAME) montado no jogador 1, desce com Y, anda e pula como jogador 2 e pausa com START (P2 PAUSED)"
 test = true

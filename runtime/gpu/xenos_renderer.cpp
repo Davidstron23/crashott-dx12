@@ -3842,27 +3842,16 @@ float4 main(float4 position : SV_Position) : SV_Target
         }
         g_rhi->BackBufferSize(g_backBufferWidth, g_backBufferHeight);
 
-        if (g_d3d12)
-        {
-            // The upscaler stays off without being initialized (it is a Vulkan path); settings.toml keeps what is configured.
-            if (settings::AtStartup().upscaler != settings::Upscaler::Off)
-                Log("[gpu] Direct3D 12: upscaler %s off (Vulkan only for now); settings.toml keeps it",
-                    settings::UpscalerName(settings::AtStartup().upscaler));
-            upscaler::DisableForBackend();  // Available() for SETTINGS, by the launcher's rule (L14)
-        }
-        else
-        {
-            // Temporal upscaler: probed on this device; the scene scale depends on it.
-            upscaler::Init(g_rhi, settings::AtStartup().upscaler, (vfs::UserDataDir() / "ngx").wstring());
-        }
-        if (upscaler::Active() != settings::AtStartup().upscaler && !g_d3d12)
+        // Temporal upscaler: probed on this device; the scene scale depends on it.
+        upscaler::Init(g_rhi, g_d3d12, settings::AtStartup().upscaler, (vfs::UserDataDir() / "ngx").wstring());
+        if (upscaler::Chosen() != settings::AtStartup().upscaler)
         {
             // It fell back (DLSS asked for where it can't run): the settings screen shows the one in
             // use, and settings.toml changes only if the player saves the options.
             settings::Values values = settings::Get();
-            values.upscaler = upscaler::Active();
+            values.upscaler = upscaler::Chosen();
             settings::Set(values);
-            settings::RendererApplied(settings::AtStartup().renderHeight, settings::AtStartup().aspect, upscaler::Active(),settings::AtStartup().upscalerQuality);
+            settings::RendererApplied(settings::AtStartup().renderHeight, settings::AtStartup().aspect, upscaler::Chosen(),settings::AtStartup().upscalerQuality);
         }
         g_temporal.active = upscaler::Active() != settings::Upscaler::Off;
         g_sceneScale = g_temporal.active ? settings::SceneScale() : g_renderScale;

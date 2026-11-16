@@ -578,11 +578,29 @@ float4 main(uint id : SV_VertexID) : SV_Position
             bool ReadTimestamps(uint32_t first, uint32_t count, uint64_t* ticks) override;
             double TimestampFrequency() const override { return double(m_timestampFrequency); }
 
-            NativeHandles Native() override { return {}; }
+            // The objects NGX (DLSS) works on; D3D12 has no image views. Barriers are recorded as they are asked for,
+            // so there is nothing to flush before the vendor call.
+            NativeHandles Native() override
+            {
+                NativeHandles handles;
+                handles.device = m_device.Get();
+                handles.queue = m_queue.Get();
+                handles.commandList = m_list.Get();
+                handles.physicalDevice = m_adapter.Get();  // IDXGIAdapter1
+                return handles;
+            }
             bool DeviceExtensionEnabled(const char*) const override { return false; }
-            void* NativeTexture(Texture*) override { return nullptr; }
+            void* NativeTexture(Texture* texture) override { return texture ? static_cast<D3D12Texture*>(texture)->resource.Get() : nullptr; }
             void* NativeView(Texture*) override { return nullptr; }
-            void PrepareNative(Texture*, NativeState) override {}
+            void PrepareNative(Texture* texture, NativeState state) override
+            {
+                static constexpr D3D12_RESOURCE_STATES states[] = { STATE_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                                    D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                                    D3D12_RESOURCE_STATE_RENDER_TARGET };
+                if (texture)
+                    Transition(static_cast<D3D12Texture*>(texture), states[uint32_t(state)]);
+            }
+            // Every draw sets its root signature, pipeline, targets and index buffer again; only the descriptor heaps carry over.
             void InvalidateState() override { m_heapsBound = false; }
 
             Timing TakeTiming() override
@@ -987,6 +1005,8 @@ float4 main(uint id : SV_VertexID) : SV_Position
             resourceDesc.MipLevels = UINT16(desc.levels);
             resourceDesc.Format = ResourceFormat(desc);
             resourceDesc.SampleDesc.Count = 1;
+            if (desc.usage & USAGE_STORAGE)
+                resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;  // the upscalers' output
             D3D12_HEAP_PROPERTIES heap{ D3D12_HEAP_TYPE_DEFAULT };
             D3D12_CLEAR_VALUE clear{};
             bool hasClear = false;

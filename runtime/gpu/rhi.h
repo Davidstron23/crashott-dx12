@@ -384,9 +384,12 @@ namespace gpu::rhi
         virtual bool ReadTimestamps(uint32_t first, uint32_t count, uint64_t* ticks) = 0;
         virtual double TimestampFrequency() const = 0;
 
-        // Native access (upscalers): handles, a texture's resource (VkImage) and
-        // view (VkImageView), its transition to `state`, and InvalidateState after recording
+        // Native access (upscalers): handles, a texture's resource (VkImage; ID3D12Resource) and
+        // view (VkImageView; null on D3D12), its transition to `state`, and InvalidateState after recording
         // native work (the backend sets its descriptor heaps, pipelines and targets again).
+        // D3D12 handles: device = ID3D12Device, queue = ID3D12CommandQueue, commandList = the
+        // ID3D12GraphicsCommandList being recorded, physicalDevice = the chosen IDXGIAdapter1; the
+        // Vulkan-only ones (instance, proc addresses) stay null.
         virtual NativeHandles Native() = 0;
         // Whether the device was created with that extension (DeviceInfo::deviceExtensions the
         // driver lacks are left out).
