@@ -394,7 +394,7 @@ input = [
 expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'restart accepted'], log_contains = ['game\.language -> PORTUGU', 'video\.renderer -> DIRECT3D 12', 'restart needed for IDIOMA, RENDERIZADOR: asking', 'restart declined'] }
 
 # RF-16, RF-21, RF-25: SETTINGS desenhado pelo Direct3D 12 (camada sobre preto) com o fsr/smaa/iluminação do settings.toml; muda a resolução e o upscaler e sai
-# (o renderer "reconfigura": com D3D12 não há alvos que recriar); o jogo segue. O FSR guardado fica (no D3D12 o FSR ainda não roda, só o DLSS).
+# (o renderer "reconfigura": com D3D12 não há alvos que recriar); o jogo segue. O FSR guardado roda no D3D12 como no Vulkan (a linha de disponibilidade do FSR no log).
 # As entradas vão ~2,5 s mais tarde que o resto dos perfis de SETTINGS (o autopilot abre SETTINGS ~9 s depois do menu): a primeira vez o sondeio do DLSS (NGX) congela a tela ~2,2 s e engole as pulsações.
 [profiles.renderizador_d3d12_ajustes]
 description = "SETTINGS desenhado com Direct3D 12: resolução e upscaler mudam, B fecha sem travar, o settings.toml guarda o renderer e o jogo segue"
@@ -411,7 +411,7 @@ input = [
     ["@main_menu"], [11.5, "RB"], [12.1, "RB"], [12.7, "SHOT"],
     [13.3, "DOWN"], [13.9, "RIGHT"], [14.5, "RIGHT"], [15.1, "RB"], [15.7, "SHOT"], [16.3, "RIGHT"], [16.9, "SHOT"], [17.5, "B"], [20.5, "SHOT"], [26.5, "SHOT"],
 ]
-expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], min_frames = 900, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'restart needed', 'anti-aliasing .* off', 'lighting remaster off'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on', 'Direct3D 12: upscaler fsr off \(Vulkan only for now\); settings\.toml keeps it', 'video\.resolution -> 1920x1080', 'graphics\.upscaler ->', '\[settings\] renderer options changed: applying them now', '\[gpu\] reconfigured: internal resolution 1920x1080', '\[settings\] screen closed', '\[gpu\] SMAA ready', '\[lighting\] ready'] }
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], min_frames = 900, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'restart needed', 'anti-aliasing .* off', 'lighting remaster off'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on', '\[gpu\] FSR available: upscaler versions', 'video\.resolution -> 1920x1080', 'graphics\.upscaler ->', '\[settings\] renderer options changed: applying them now', '\[gpu\] reconfigured: internal resolution 1920x1080', '\[settings\] screen closed', '\[gpu\] SMAA ready', '\[lighting\] ready'] }
 
 # RF-2, RF-8: com uma GPU não NVIDIA (CRASH_GPU_VENDOR=amd), o DLSS guardado sai em cinza e o RIGHT/LEFT não volta a ele; SETTINGS mostra FSR 3.1.
 # O expect só leva linhas comuns às duas APIs: roda igual com --set renderer=vulkan.
@@ -799,7 +799,7 @@ audio = false
 userdata_mode = "copy"
 screenshot_overlay = true
 skip_intros = true
-# fps_limit=30 e CRASH_NO_HID=1: sem isso os apertos do menu se perdem (fps_limit=0 da base) e um controle fisico atrapalha.
+# fps_limit=30 e CRASH_NO_HID=1: sem isso os apertos do menu se perdem (fps_limit=0 da base) e um controle físico atrapalha.
 env = { CRASH_NO_HID = "1", CRASH_SETTINGS = "video.fps_limit=30" }
 # A partir do menu: DOWN x3, A = SETTINGS (abre na aba JOGO); RB x2 = VÍDEO; DOWN = RESOLUÇÃO;
 # RIGHT x2 = 1920x1080; RB = GRÁFICOS; RIGHT = DLSS (a primeira vez a tela trava ~1,2 s sondando o
@@ -828,12 +828,12 @@ audio = false
 userdata_mode = "copy"
 screenshot_overlay = true
 skip_intros = true
-# fps_limit=30 e CRASH_NO_HID=1: sem isso os apertos do menu se perdem (fps_limit=0 da base) e um controle fisico atrapalha.
+# fps_limit=30 e CRASH_NO_HID=1: sem isso os apertos do menu se perdem (fps_limit=0 da base) e um controle físico atrapalha.
 env = { CRASH_NO_HID = "1", CRASH_SETTINGS = "video.fps_limit=30" }
 # A partir do menu: DOWN x3, A = SETTINGS (abre na aba JOGO); RB x2 = VÍDEO; DOWN = RESOLUÇÃO;
 # RIGHT x2 = 1920x1080; RB = GRÁFICOS; RIGHT x2 = FSR 3.1 (a ordem é OFF, DLSS, FSR; a primeira vez
-# a tela trava com o sondeio do DLSS: congela a tela ~2,2 s neste PC, e as pulsações de SETTINGS vão 2 s mais tarde para
-# não caírem no tranco); DOWN, RIGHT = modo QUALIDADE; B = fecha (sem pergunta: nada precisa
+# a tela trava com o sondeio do DLSS, ~2,2 s neste PC, e as pulsações de SETTINGS vão 2 s mais tarde
+# para não caírem no tranco); DOWN, RIGHT = modo QUALIDADE; B = fecha (sem pergunta: nada precisa
 # reiniciar) e o renderer recria os alvos; DOWN, A = LOAD GAME; slot 1, CONTINUE e Y nas telas deles.
 # Capturas (com o overlay completo: a linha RENDER mostra a resolução e o FSR): aba GRÁFICOS,
 # menu depois de fechar, fase.
