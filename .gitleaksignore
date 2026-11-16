@@ -1,0 +1,2 @@
+# False positives: SHA-256 pins of third-party files, not secrets.
+93dbb9479783e422d9a564629ce264618adb0907:tools/setup.py:generic-api-key:118
