@@ -25,6 +25,14 @@
 #include <ffx_api/ffx_api.h>
 #include <ffx_api/ffx_upscale.h>
 #include <ffx_api/vk/ffx_api_vk.h>
+#if CRASH_HAVE_FSR_DX12
+// Both backend headers declare the same two frame generation enumerators (unused here): rename the DX12 pair.
+#define FFX_API_CONFIGURE_FG_SWAPCHAIN_KEY_WAITCALLBACK FFX_API_CONFIGURE_FG_SWAPCHAIN_KEY_WAITCALLBACK_DX12
+#define FFX_API_CONFIGURE_FG_SWAPCHAIN_KEY_FRAMEPACINGTUNING FFX_API_CONFIGURE_FG_SWAPCHAIN_KEY_FRAMEPACINGTUNING_DX12
+#include <ffx_api/dx12/ffx_api_dx12.h>
+#undef FFX_API_CONFIGURE_FG_SWAPCHAIN_KEY_WAITCALLBACK
+#undef FFX_API_CONFIGURE_FG_SWAPCHAIN_KEY_FRAMEPACINGTUNING
+#endif
 #endif
 
 namespace gpu::upscaler
@@ -49,7 +57,6 @@ namespace gpu::upscaler
         // asks (Available).
         bool g_dlssProbed = false, g_fsrProbed = false;
         settings::Upscaler g_active = settings::Upscaler::Off;
-        settings::Upscaler g_chosen = settings::Upscaler::Off;  // Chosen()
         std::string g_name = "off";
 
         std::filesystem::path ExeDirectory()
@@ -339,7 +346,17 @@ namespace gpu::upscaler
                                                       VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME,
                                                       VK_KHR_SHADER_SUBGROUP_EXTENDED_TYPES_EXTENSION_NAME };
         void* g_ffxModule = nullptr;
-        // The FidelityFX API entry points of amd_fidelityfx_vk.dll.
+        // One library per API; only the one of the API in use is loaded.
+        const char* FfxModuleName()
+        {
+#if CRASH_HAVE_FSR_DX12
+            if (g_d3d12)
+                return "amd_fidelityfx_dx12.dll";
+#endif
+            return FFX_MODULE;
+        }
+
+        // The FidelityFX API entry points of the library above.
         struct
         {
             PfnFfxCreateContext CreateContext;
@@ -362,22 +379,30 @@ namespace gpu::upscaler
 
         void ProbeFsr()
         {
+#if !CRASH_HAVE_FSR_DX12
+            if (g_d3d12)
+            {
+                Log("[gpu] FSR: not built in (thirdparty/fsr has no Direct3D 12 files)");
+                return;
+            }
+#endif
             // The DLL calls these through vkGetDeviceProcAddr by their extension names: without them
             // it would call null pointers, so FSR is only offered when the device has them all.
             std::string missing;
             for (const char* name : FSR_DEVICE_EXTENSIONS)
-                if (!g_rhi->DeviceExtensionEnabled(name))
+                if (!g_d3d12 && !g_rhi->DeviceExtensionEnabled(name))
                     missing += (missing.empty() ? "" : ", ") + std::string(name);
             if (!missing.empty())
             {
                 Log("[gpu] FSR: not available on this GPU (the driver lacks %s)", missing.c_str());
                 return;
             }
-            std::filesystem::path dll = ExeDirectory() / FFX_MODULE;
+            const char* module = FfxModuleName();
+            std::filesystem::path dll = ExeDirectory() / module;
             g_ffxModule = plat::OpenLibrary(dll);
             if (!g_ffxModule)
             {
-                Log("[gpu] FSR: %s not found next to the exe", FFX_MODULE);
+                Log("[gpu] FSR: %s not found next to the exe", module);
                 return;
             }
             g_ffx.CreateContext = reinterpret_cast<PfnFfxCreateContext>(plat::FindSymbol(g_ffxModule, "ffxCreateContext"));
@@ -387,7 +412,7 @@ namespace gpu::upscaler
             g_ffx.Dispatch = reinterpret_cast<PfnFfxDispatch>(plat::FindSymbol(g_ffxModule, "ffxDispatch"));
             if (!g_ffx.CreateContext || !g_ffx.Query || !g_ffx.Dispatch || !g_ffx.DestroyContext)
             {
-                Log("[gpu] FSR: amd_fidelityfx_vk.dll lacks the FidelityFX API entry points");
+                Log("[gpu] FSR: %s lacks the FidelityFX API entry points", module);
                 return;
             }
             // Upscaler versions this DLL has (the device is only needed on DX12).
@@ -395,6 +420,7 @@ namespace gpu::upscaler
             ffxQueryDescGetVersions versions{};
             versions.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
             versions.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+            versions.device = g_d3d12 ? g_d3d12Device : nullptr;
             versions.outputCount = &count;
             if (g_ffx.Query(nullptr, &versions.header) != FFX_API_RETURN_OK || !count)
             {
@@ -439,7 +465,8 @@ namespace gpu::upscaler
             }
         }
 
-        // Described by hand: ffxApiGetImageResourceDescriptionVK reads a mutable-format image as sRGB.
+        // Described by hand: ffxApiGetImageResourceDescriptionVK reads a mutable-format image as sRGB, and
+        // ffxApiGetResourceDX12 would take the TYPELESS format of the resource instead of the typed one.
         FfxApiResource FfxResource(const NativeTexture& texture, bool output)
         {
             FfxApiResourceDescription description{};
@@ -451,8 +478,17 @@ namespace gpu::upscaler
             description.mipCount = 1;
             description.flags = FFX_API_RESOURCE_FLAGS_NONE;
             description.usage = output ? FFX_API_RESOURCE_USAGE_UAV : FFX_API_RESOURCE_USAGE_READ_ONLY;
-            return ffxApiGetResourceVK(reinterpret_cast<void*>(texture.image), description,
-                                       output ? FFX_API_RESOURCE_STATE_UNORDERED_ACCESS : FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+            uint32_t state = output ? FFX_API_RESOURCE_STATE_UNORDERED_ACCESS : FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ;
+            if (g_d3d12)
+            {
+                // The states PrepareNative left the resource in (shader resource / unordered access).
+                FfxApiResource resource{};
+                resource.resource = texture.resource;
+                resource.state = state;
+                resource.description = description;
+                return resource;
+            }
+            return ffxApiGetResourceVK(reinterpret_cast<void*>(texture.image), description, state);
         }
 
         bool EvaluateFsr(const Frame& frame)
@@ -473,13 +509,23 @@ namespace gpu::upscaler
                 backend.vkDevice = g_device;
                 backend.vkPhysicalDevice = g_physical;
                 backend.vkDeviceProcAddr = g_getDeviceProcAddr;
+                ffxCreateContextDescHeader* backendHeader = &backend.header;
+#if CRASH_HAVE_FSR_DX12
+                ffxCreateBackendDX12Desc backend12{};
+                if (g_d3d12)
+                {
+                    backend12.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
+                    backend12.device = static_cast<ID3D12Device*>(g_d3d12Device);
+                    backendHeader = &backend12.header;
+                }
+#endif
                 ffxOverrideVersion version{};
                 version.header.type = FFX_API_DESC_TYPE_OVERRIDE_VERSION;
                 version.versionId = g_fsrVersionId;
-                backend.header.pNext = &version.header;
+                backendHeader->pNext = &version.header;
                 ffxCreateContextDescUpscale create{};
                 create.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
-                create.header.pNext = &backend.header;
+                create.header.pNext = backendHeader;
                 create.flags = flags;
                 create.maxRenderSize = { frame.renderWidth, frame.renderHeight };
                 create.maxUpscaleSize = { frame.outputWidth, frame.outputHeight };
@@ -501,7 +547,7 @@ namespace gpu::upscaler
             }
             ffxDispatchDescUpscale dispatch{};
             dispatch.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
-            dispatch.commandList = native.commandBuffer;
+            dispatch.commandList = native.commandList;
             dispatch.color = FfxResource(native.color, false);
             dispatch.depth = FfxResource(native.depth, false);
             dispatch.motionVectors = FfxResource(native.motion, false);
@@ -604,13 +650,6 @@ namespace gpu::upscaler
         {
             g_d3d12Device = native.device;
             g_adapter = native.physicalDevice;
-            // FSR does not run on Direct3D 12 yet (issue #7), but SETTINGS still offers it by the launcher's rule
-            // (the files next to the exe and the GPU), without probing it.
-            g_fsrProbed = true;
-#if CRASH_HAVE_FSR
-            gpu::GpuInfo info = gpu::DetectGpu();
-            g_fsrAvailable = std::filesystem::exists(ExeDirectory() / FFX_MODULE) && (!info.vulkan || info.fsrExtensions);
-#endif
         }
         else
         {
@@ -635,12 +674,6 @@ namespace gpu::upscaler
 
     void Select(settings::Upscaler wanted)
     {
-        settings::Upscaler requested = wanted;
-        if (g_d3d12 && wanted == settings::Upscaler::Fsr)
-        {
-            Log("[gpu] Direct3D 12: upscaler %s off (Vulkan only for now); settings.toml keeps it", settings::UpscalerName(wanted));
-            wanted = settings::Upscaler::Off;
-        }
         g_active = Available(wanted) ? wanted : settings::Upscaler::Off;
         if (wanted != settings::Upscaler::Off && g_active == settings::Upscaler::Off)
             Log("[gpu] upscaler %s is not available here: the scene is drawn without temporal upscaling", settings::UpscalerName(wanted));
@@ -651,8 +684,6 @@ namespace gpu::upscaler
         else if (g_active == settings::Upscaler::Fsr)
             g_name = "FSR " + g_fsrVersionName;
 #endif
-        // Direct3D 12 keeps FSR chosen (SETTINGS shows it, nothing is rewritten) although it does not run.
-        g_chosen = g_d3d12 && requested == settings::Upscaler::Fsr ? requested : g_active;
         // The one not in use gives its memory back (the GPU is idle: the renderer waited).
         if (g_active != settings::Upscaler::Dlss && g_dlssAvailable)
             g_dlssApi.ReleaseFeature();
@@ -684,7 +715,7 @@ namespace gpu::upscaler
 
     settings::Upscaler Chosen()
     {
-        return g_chosen;
+        return g_active;
     }
 
     const std::string& ActiveName()

@@ -98,7 +98,7 @@ SUBTITLES_ASSET = f"CrashRecomp-{SUBTITLES_TAG}-legendas.zip"
 REMASTER_PREFIX = f"CrashRecomp-{REMASTER_TAG}-HD-AI-Remaster.part"
 
 DLSS = "https://github.com/NVIDIA/DLSS/raw/v310.9.16/"
-# FSR 3.1 for Vulkan: FidelityFX SDK 1.1.4 (the SDK 2.x only ships DX12 DLLs).
+# FSR 3.1 for Vulkan and Direct3D 12: FidelityFX SDK 1.1.4 (the SDK 2.x only ships DX12 DLLs).
 FSR = "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/raw/v1.1.4/"
 # (url, destination, sha256)
 DOWNLOADS = [
@@ -115,6 +115,8 @@ DOWNLOADS = [
     (FSR + "ffx-api/include/ffx_api/ffx_upscale.h", "thirdparty/fsr/include/ffx_api/ffx_upscale.h", "1155bcdcea9c10e6a95507bc9422ca062a853ac84250f0b09a637a66836b3ac1"),
     (FSR + "ffx-api/include/ffx_api/vk/ffx_api_vk.h", "thirdparty/fsr/include/ffx_api/vk/ffx_api_vk.h", "a50a8d5ff5689a10a6ce378f2df5569fd880c89ec46e8356aaf35eb40512edd9"),
     (FSR + "PrebuiltSignedDLL/amd_fidelityfx_vk.dll", "thirdparty/fsr/bin/amd_fidelityfx_vk.dll", "a1624cc4238fef046f30c4d80ce3f47be63fc5f5373f49e3ee9edb9960f54c78"),
+    (FSR + "ffx-api/include/ffx_api/dx12/ffx_api_dx12.h", "thirdparty/fsr/include/ffx_api/dx12/ffx_api_dx12.h", "215804fba316acb81d2c463b6bbce36c53cc63465c15b8c9858554c8111fae24"),
+    (FSR + "PrebuiltSignedDLL/amd_fidelityfx_dx12.dll", "thirdparty/fsr/bin/amd_fidelityfx_dx12.dll", "12a5081257ec95b0b53ad51b4a87fb3c03f97fe0bbb59f9496968f8d50ef93a6"),
 ]
 # HLSL -> SPIR-V for the Vulkan renderer: dxcompiler.dll of Microsoft's official DXC release (signed;
 # the Windows SDK's copy has no SPIR-V backend), with its licenses. The same zip carries dxil.dll, the
