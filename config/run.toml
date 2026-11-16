@@ -394,7 +394,8 @@ input = [
 expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'restart accepted'], log_contains = ['game\.language -> PORTUGU', 'video\.renderer -> DIRECT3D 12', 'restart needed for IDIOMA, RENDERIZADOR: asking', 'restart declined'] }
 
 # RF-16, RF-21, RF-25: SETTINGS desenhado pelo Direct3D 12 (camada sobre preto) com o fsr/smaa/iluminação do settings.toml; muda a resolução e o upscaler e sai
-# (o renderer "reconfigura": com D3D12 não há alvos que recriar); o jogo segue.
+# (o renderer "reconfigura": com D3D12 não há alvos que recriar); o jogo segue. O FSR guardado fica (no D3D12 o FSR ainda não roda, só o DLSS).
+# As entradas vão ~2,5 s mais tarde que o resto dos perfis de SETTINGS (o autopilot abre SETTINGS ~9 s depois do menu): a primeira vez o sondeio do DLSS (NGX) congela a tela ~2,2 s e engole as pulsações.
 [profiles.renderizador_d3d12_ajustes]
 description = "SETTINGS desenhado com Direct3D 12: resolução e upscaler mudam, B fecha sem travar, o settings.toml guarda o renderer e o jogo segue"
 test = true
@@ -407,14 +408,15 @@ skip_intros = true
 renderer = "d3d12"
 env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_RESTART = "off" }
 input = [
-    ["@main_menu"], [9, "RB"], [9.6, "RB"], [10.2, "SHOT"],
-    [10.8, "DOWN"], [11.4, "RIGHT"], [12, "RIGHT"], [12.6, "RB"], [13.2, "SHOT"], [13.8, "RIGHT"], [14.4, "SHOT"], [15, "B"], [18, "SHOT"], [24, "SHOT"],
+    ["@main_menu"], [11.5, "RB"], [12.1, "RB"], [12.7, "SHOT"],
+    [13.3, "DOWN"], [13.9, "RIGHT"], [14.5, "RIGHT"], [15.1, "RB"], [15.7, "SHOT"], [16.3, "RIGHT"], [16.9, "SHOT"], [17.5, "B"], [20.5, "SHOT"], [26.5, "SHOT"],
 ]
-expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], min_frames = 900, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'restart needed', 'anti-aliasing .* off', 'lighting remaster off'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on', 'Direct3D 12: GPU .* by the launcher.s rule: DLSS (yes|no), FSR (yes|no)', 'video\.resolution -> 1920x1080', 'graphics\.upscaler ->', '\[settings\] renderer options changed: applying them now', '\[gpu\] reconfigured: internal resolution 1920x1080', '\[settings\] screen closed', '\[gpu\] SMAA ready', '\[lighting\] ready'] }
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], min_frames = 900, log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'restart needed', 'anti-aliasing .* off', 'lighting remaster off'], log_contains = ['\[gpu\] renderer requested: d3d12 \(CRASH_RENDERER\)', '\[gpu\] Direct3D 12 renderer on', 'Direct3D 12: upscaler fsr off \(Vulkan only for now\); settings\.toml keeps it', 'video\.resolution -> 1920x1080', 'graphics\.upscaler ->', '\[settings\] renderer options changed: applying them now', '\[gpu\] reconfigured: internal resolution 1920x1080', '\[settings\] screen closed', '\[gpu\] SMAA ready', '\[lighting\] ready'] }
 
-# RF-32: com Direct3D 12 e uma GPU que a regra do launcher dá por não NVIDIA, o DLSS guardado sai em cinza e o RIGHT/LEFT não volta a ele.
+# RF-2, RF-8: com uma GPU não NVIDIA (CRASH_GPU_VENDOR=amd), o DLSS guardado sai em cinza e o RIGHT/LEFT não volta a ele; SETTINGS mostra FSR 3.1.
+# O expect só leva linhas comuns às duas APIs: roda igual com --set renderer=vulkan.
 [profiles.renderizador_d3d12_dlss_cinza]
-description = "Direct3D 12 + CRASH_GPU_VENDOR=amd + dlss guardado: SETTINGS mostra DLSS (REQUIRES NVIDIA RTX) em cinza e, sem tocar a linha, o settings.toml segue com dlss"
+description = "CRASH_GPU_VENDOR=amd + dlss guardado (Direct3D 12 ou Vulkan): o jogo cai para FSR 3.1 sem reescrever o settings.toml; SETTINGS abre e fecha sem tocar a linha"
 test = true
 timeout = 30
 audio = false
@@ -424,10 +426,10 @@ skip_intros = true
 renderer = "d3d12"
 env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_RESTART = "off", CRASH_GPU_VENDOR = "amd" }
 input = [["@main_menu"], [9, "RB"], [9.6, "RB"], [10.2, "RB"], [11.5, "SHOT"], [12, "B"], [14, "SHOT"]]
-expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'graphics\.upscaler ->'], log_contains = ['Direct3D 12: GPU .* \(AMD, CRASH_GPU_VENDOR\) by the launcher.s rule: DLSS no, FSR yes', 'Direct3D 12: upscaler dlss off \(Vulkan only for now\); settings\.toml keeps it', '\[settings\] screen closed'] }
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'graphics\.upscaler ->'], log_contains = ['DLSS: needs an NVIDIA RTX GPU \(this GPU.s vendor is 0x1002, CRASH_GPU_VENDOR\)', 'settings\.toml asks for DLSS, which this PC can.t run .* using FSR 3\.1 instead', '\[settings\] screen closed'] }
 
 [profiles.renderizador_d3d12_dlss_salta]
-description = "Direct3D 12 + CRASH_GPU_VENDOR=amd + dlss guardado: LEFT/RIGHT na linha do upscaler pulam o DLSS (FSR e OFF, nunca DLSS)"
+description = "CRASH_GPU_VENDOR=amd + dlss guardado (Direct3D 12 ou Vulkan): LEFT/RIGHT na linha do upscaler pulam o DLSS (FSR e OFF, nunca DLSS)"
 test = true
 timeout = 30
 audio = false
@@ -437,7 +439,7 @@ skip_intros = true
 renderer = "d3d12"
 env = { CRASH_MENU_AUTOPILOT = "70:DOWN:2500,70:DOWN:1200,70:DOWN:1200,70:A:1500", CRASH_RESTART = "off", CRASH_GPU_VENDOR = "amd" }
 input = [["@main_menu"], [9, "RB"], [9.6, "RB"], [10.2, "RB"], [11, "RIGHT"], [11.6, "SHOT"], [12.2, "LEFT"], [12.8, "LEFT"], [13.4, "SHOT"], [14, "LEFT"], [14.6, "RIGHT"], [15.2, "RIGHT"], [15.8, "RIGHT"], [16.4, "B"], [18, "SHOT"]]
-expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'graphics\.upscaler -> DLSS'], log_contains = ['DLSS no, FSR yes', 'graphics\.upscaler -> FSR 3\.1', 'graphics\.upscaler -> OFF', '\[settings\] screen closed'] }
+expect = { exit = ["timeout"], restarts = 0, events = ["main_menu"], log_absent = ['\[fatal\]', '\[crash\]', 'graphics\.upscaler -> DLSS'], log_contains = ['DLSS: needs an NVIDIA RTX GPU', 'graphics\.upscaler -> FSR 3\.1', 'graphics\.upscaler -> OFF', '\[settings\] screen closed'] }
 
 # Spec 005, T1 (RF-1, RF-2, RF-9): la cadena de presentacion sigue a la ventana. Con --set renderer=vulkan se mide la misma ventana con Vulkan.
 # WINSIZE fija el area cliente (sin mover ni activar la ventana); ALT_ENTER es una pulsacion completa. Con --background, CRASH_WINDOW_MONITOR pone el "monitor" de
@@ -557,8 +559,9 @@ input = [["@cinematic_skipped"], [0.5, "SHOT"], ["@gameplay_ready"], [0.5, "SHOT
 parity = ["gameplay_ready+0.5", "gameplay_ready+2.5", "gameplay_ready+7.5"]
 expect = { exit = ["timeout"], events = ["level_start", "level_ready", "cinematic", "cinematic_skipped", "cinematic_done", "gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]'], log_contains = ['SkipToLevel, StartLevel 0 L1_E1'] }
 
+# DLSS on both renderers: the same lines with Vulkan and Direct3D 12, and no failed upscale.
 [profiles.renderizador_dlss]
-description = "Vila sem cena com DLSS nativo (DLAA) por CRASH_SETTINGS, anda e pausa; sem renderer no perfil: use --set renderer=vulkan|d3d12 (e o modo em CRASH_SETTINGS, graphics.upscaler_quality); compare as capturas lado a lado (DLSS e temporal: sem comparacao exata)"
+description = "Vila sem cena com DLSS nativo (DLAA) por CRASH_SETTINGS, anda e pausa; sem renderer no perfil: use --set renderer=vulkan|d3d12 (e o modo em CRASH_SETTINGS, graphics.upscaler_quality); compare as capturas lado a lado (DLSS é temporal: sem comparação exata)"
 test = false
 timeout = 45
 audio = false
@@ -567,7 +570,7 @@ boot = "level:L1_E1"
 skip_cinematics = true
 env = { CRASH_NO_HID = "1", CRASH_SETTINGS = "graphics.upscaler=dlss;graphics.upscaler_quality=native" }
 input = [["@cinematic_skipped"], [0.5, "SHOT"], ["@gameplay_ready"], [0.5, "SHOT"], [1, "LS", 0, 1, 2.5], [4, "SHOT"], [6, "START"], [7.5, "SHOT"], [9, "START"]]
-expect = { exit = ["timeout"], events = ["gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]', 'DLSS: could not', 'evaluation failed'], log_contains = ['\[gpu\] DLSS available \(', '\[gpu\] dlss probed in \d+ ms', '\[gpu\] DLSS feature created: \d+x\d+ -> \d+x\d+, native', '\[gpu\] temporal upscaling \(DLSS '] }
+expect = { exit = ["timeout"], events = ["gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]', 'DLSS: could not', 'evaluation failed', 'upscaled, [1-9]\d* failed'], log_contains = ['\[gpu\] DLSS available \(', '\[gpu\] dlss probed in \d+ ms', '\[gpu\] DLSS feature created: \d+x\d+ -> \d+x\d+, native', '\[gpu\] temporal upscaling \(DLSS '] }
 
 [profiles.coop_p2]
 description = "Co-op local: boot direto na vila L1_E1 sem a cena; um segundo controle virtual (entradas P2_ do script) entra com B (JOIN GAME) montado no jogador 1, desce com Y, anda e pula como jogador 2 e pausa com START (P2 PAUSED)"

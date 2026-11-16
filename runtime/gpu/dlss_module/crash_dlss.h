@@ -4,7 +4,8 @@
 //
 // The DLL is our code (crash_dlss.cpp, MIT) linked with NVIDIA's static NGX library
 // (thirdparty/dlss/lib/nvsdk_ngx_s.lib) and loaded at run time, next to nvngx_dlss.dll:
-//   - CrashRecomp.exe (gpu/upscaler.cpp) runs DLSS on the renderer's own Vulkan device;
+//   - CrashRecomp.exe (gpu/upscaler.cpp) runs DLSS on the renderer's own Vulkan or Direct3D 12
+//     device;
 //   - CrashLauncher.exe and CrashSetup.exe ask CrashDlss_Probe whether this PC can run DLSS (an
 //     NVIDIA RTX GPU whose driver has DLSS), through NGX's own capability check on a Vulkan device
 //     of their own, so that DLSS is offered only where it works.

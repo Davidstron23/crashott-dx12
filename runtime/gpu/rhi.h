@@ -241,10 +241,10 @@ namespace gpu::rhi
     enum class NativeState : uint8_t { ShaderRead, UnorderedAccess, CopySource, CopyDest, RenderTarget };
     struct NativeHandles
     {
-        void* device = nullptr;       // VkDevice
-        void* queue = nullptr;        // VkQueue
-        void* commandList = nullptr;  // VkCommandBuffer (the one being recorded)
-        void* physicalDevice = nullptr;  // VkPhysicalDevice
+        void* device = nullptr;       // VkDevice; ID3D12Device on Direct3D 12
+        void* queue = nullptr;        // VkQueue; ID3D12CommandQueue
+        void* commandList = nullptr;  // VkCommandBuffer (the one being recorded); ID3D12GraphicsCommandList
+        void* physicalDevice = nullptr;  // VkPhysicalDevice; IDXGIAdapter1
         void* instance = nullptr;        // VkInstance
         void* getInstanceProcAddr = nullptr;  // PFN_vkGetInstanceProcAddr
         void* getDeviceProcAddr = nullptr;    // PFN_vkGetDeviceProcAddr
