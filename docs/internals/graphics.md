@@ -88,7 +88,7 @@ textures), "Iluminação (remaster)", "Janela". Test profiles: `iluminacao`, `il
 - Upscalers (`upscaler.cpp`) run on the renderer's device: DLSS through NGX's Vulkan API inside
   `CrashDlss.dll` (`gpu/dlss_module/crash_dlss.h`: C interface, `CRASH_DLSS_API_VERSION`; loaded at run time,
   the exe has no NGX code), FSR 3.1.4 through `amd_fidelityfx_vk.dll` (FidelityFX SDK 1.1.4; SDK 2.x is DX12
-  only). The device enables the extensions they ask for (`rhi::DeviceInfo`): NGX's list, and the ones
+  only). On Direct3D 12 the same SDK v1.1.4 runs through `amd_fidelityfx_dx12.dll` (no Vulkan extension check). The device enables the extensions they ask for (`rhi::DeviceInfo`): NGX's list, and the ones
   the FidelityFX DLL looks up by extension name (`vkGetBufferMemoryRequirements2KHR`,
   `vkSetDebugUtilsObjectNameEXT`: a null call otherwise).
 - Availability (v1.05): DLSS is probed only on an NVIDIA GPU (vendor 0x10DE; `CRASH_GPU_VENDOR=amd|intel|nvidia|<hex>`

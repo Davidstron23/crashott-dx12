@@ -216,8 +216,8 @@ endif()
 #   thirdparty/dlss (include/, lib/) the DLL is built here; the installer instead carries it prebuilt
 #   in thirdparty/dlss/bin, so building the game needs no SDK file. On a PC without an NVIDIA RTX GPU
 #   the installer leaves both DLLs out.
-# - AMD FSR 3.1 (FidelityFX API, Vulkan backend, thirdparty/fsr: include/ffx_api headers and the
-#   signed bin/amd_fidelityfx_vk.dll, loaded at run time and copied next to CrashRecomp.exe).
+# - AMD FSR 3.1 (FidelityFX API, Vulkan and Direct3D 12 backends, thirdparty/fsr: include/ffx_api headers and the
+#   signed bin/amd_fidelityfx_{vk,dx12}.dll, loaded at run time and copied next to CrashRecomp.exe).
 # On Linux both come prebuilt (made once on the release machine: tools/linux_dlss.py builds
 # libCrashDlss.so against NGX's Linux library and fetches NVIDIA's libnvidia-ngx-dlss.so.*) and are
 # copied next to the exe when thirdparty/dlss/bin has them.
@@ -260,6 +260,12 @@ if (WIN32 AND EXISTS ${CRASH_FSR_DIR}/include/ffx_api/vk/ffx_api_vk.h AND EXISTS
     target_compile_definitions(CrashRecomp PRIVATE CRASH_HAVE_FSR=1)
     add_custom_command(TARGET CrashRecomp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CRASH_FSR_DIR}/bin/amd_fidelityfx_vk.dll $<TARGET_FILE_DIR:CrashRecomp>)
+    # The Direct3D 12 library is optional on top of that: without it, FSR is "not built in" with Direct3D 12.
+    if (EXISTS ${CRASH_FSR_DIR}/include/ffx_api/dx12/ffx_api_dx12.h AND EXISTS ${CRASH_FSR_DIR}/bin/amd_fidelityfx_dx12.dll)
+        target_compile_definitions(CrashRecomp PRIVATE CRASH_HAVE_FSR_DX12=1)
+        add_custom_command(TARGET CrashRecomp POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CRASH_FSR_DIR}/bin/amd_fidelityfx_dx12.dll $<TARGET_FILE_DIR:CrashRecomp>)
+    endif()
 elseif (WIN32)
     message(STATUS "thirdparty/fsr not found: FSR disabled")
 endif()
