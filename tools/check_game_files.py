@@ -32,6 +32,13 @@ GAME_EXTENSIONS = {
     ".iso": "disc image",
     ".god": "disc image",
     ".dds": "texture (HD packs ship as release assets or mods, not in git)",
+    ".addon": "ReShade add-on (RenoDX and others are test tools, not in git)",
+    ".addon32": "ReShade add-on (RenoDX and others are test tools, not in git)",
+    ".addon64": "ReShade add-on (RenoDX and others are test tools, not in git)",
+    ".ini": "ReShade settings or preset (they stay on each machine)",
+    ".fx": "ReShade effect (not in git)",
+    ".fxh": "ReShade effect header (not in git)",
+    ".log": "log file (ReShade.log and run logs stay on each machine)",
 }
 
 # Build output

@@ -32,6 +32,16 @@
 *.map
 *.obj
 
+# ReShade and RenoDX (test tools from their official sources, never distributed): add-ons, settings and
+# presets, effects and their folder. The DLL and the log are already covered above and below.
+*.addon
+*.addon32
+*.addon64
+*.ini
+*.fx
+*.fxh
+reshade-shaders/
+
 # XenonRecomp: cloned at a pinned commit by tools/setup.py, plus patches/XenonRecomp.patch
 /tools/XenonRecomp/
 
