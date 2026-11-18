@@ -14,7 +14,8 @@ swappers) only hook into Direct3D games.
 - The D3D12 renderer draws everything the Vulkan one does: menus, videos, gameplay, the lighting remaster,
   SMAA / FXAA, the overlay and screenshots.
 - DLSS and FSR 3.1 on D3D12.
-- Checking that ReShade-based mods load on the D3D12 build.
+- Checking that ReShade-based mods load on the D3D12 build: ReShade does, the generic RenoDX add-on does
+  not (see **ReShade** below).
 
 **Out of scope**
 - Changes to the game, its recompiled code or its assets.
@@ -35,6 +36,30 @@ installation. Play the new build with `dist\CrashLauncher.exe`; run the automate
 `python tools\run_game.py <profile>` (`--list`). `--install <folder>` if the game is not in the default
 folder. Never delete the linked folders with `rm -rf` or `git clean -x`: use `rmdir <folder>`.
 
+**ReShade** (D3D12 only)
+
+- **Result:** ReShade 6.8.0 (with add-on support) works with the D3D12 renderer. With no effects on, the
+  game looks the same as without it; DLSS, FSR, window mode and resolution changes behave as without
+  ReShade. The generic RenoDX add-on does not: it forces the swap chain to R10G10B10A2 (HDR10) and its
+  intermediate targets to FP16, so on an SDR monitor the image looks yellowish and burnt, the port's
+  screenshots come out wrong and the debug layer complains. A RenoDX mod made for this game would be the
+  proper way; none exists yet. With Vulkan, ReShade needs its own Vulkan layer; that was not tried.
+- **Tested:** ReShade 6.8.0.2155 (the "with full add-on support" installer from reshade.me), RenoDX generic
+  v0.2026.1112.413, the fork's D3D12 build on Windows 11 with an NVIDIA GPU. Only test copies of the build
+  were tried, never the installation made by the fork's installer.
+- **Steps** (`dist\` copy): run the official installer from [reshade.me](https://reshade.me), pick
+  `CrashRecomp.exe`, API "DirectX 10/11/12", then start the game with `--renderer d3d12`. ReShade runs
+  as `dxgi.dll` next to the exe, the name that was tested (the installer itself was not run here; its DLL
+  was extracted). A `d3d12.dll` name also hooked in one boot test. Home opens the
+  ReShade overlay.
+- **Limits:** the port's own screenshots (F12) are read before the frame is presented, so they do not
+  include ReShade effects: use ReShade's capture key. With the name `dxgi.dll`, ReShade also loads in
+  `CrashLauncher.exe` (same folder); the launcher still works and still offers DLSS.
+  Do not install RenoDX generic.
+- **Remove it:** delete `dxgi.dll`, `ReShade.ini`, `ReShade.log`, `ReShadePreset.ini` and `reshade-shaders\`
+  (and `screenshots\` if ReShade made it). With them gone, the game is as before (checked: same boot
+  frames with D3D12 and Vulkan).
+
 **Status:** in development. The original project's README follows below.
 
 ## Español
@@ -51,7 +76,8 @@ de ReShade, sustitutos de reescaladores) solo se enganchan a juegos Direct3D.
 - El renderizador D3D12 dibuja todo lo que dibuja el de Vulkan: menús, vídeos, partida, la remasterización
   de luz, SMAA / FXAA, el overlay y las capturas.
 - DLSS y FSR 3.1 en D3D12.
-- Comprobar que los mods basados en ReShade cargan con la versión D3D12.
+- Comprobar que los mods basados en ReShade cargan con la versión D3D12: ReShade sí, el add-on genérico
+  RenoDX no (ver **ReShade** abajo).
 
 **Fuera de alcance**
 - Cambios en el juego, su código recompilado o sus recursos.
@@ -71,6 +97,31 @@ el toolchain en vez de copiarlas, copia los archivos de terceros, activa los hoo
 instalación. Juega la versión nueva con `dist\CrashLauncher.exe`; las pruebas automáticas, con
 `python tools\run_game.py <perfil>` (`--list`). `--install <carpeta>` si el juego no está en la carpeta
 por defecto. Nunca borres las carpetas enlazadas con `rm -rf` ni `git clean -x`: usa `rmdir <carpeta>`.
+
+**ReShade** (solo D3D12)
+
+- **Resultado:** ReShade 6.8.0 (con soporte de add-ons) funciona con el renderizador D3D12. Sin efectos
+  activos, el juego se ve igual que sin él; DLSS, FSR, el modo de ventana y los cambios de resolución se
+  comportan como sin ReShade. El add-on genérico de RenoDX no: fuerza la cadena de intercambio a
+  R10G10B10A2 (HDR10) y sus objetivos intermedios a FP16, así que en un monitor SDR la imagen sale
+  amarillenta y quemada, las capturas del port salen mal y la capa de depuración protesta. Lo propio sería
+  un mod de RenoDX hecho para este juego; todavía no existe. Con Vulkan, ReShade necesita su propia capa
+  de Vulkan; no se probó.
+- **Probado:** ReShade 6.8.0.2155 (el instalador "with full add-on support" de reshade.me), RenoDX
+  genérico v0.2026.1112.413, la versión D3D12 del fork en Windows 11 con una GPU NVIDIA. Solo se probaron copias
+  de prueba del build, nunca la instalación hecha con el instalador del fork.
+- **Pasos** (copia `dist\`): ejecuta el instalador oficial de [reshade.me](https://reshade.me), elige
+  `CrashRecomp.exe`, API "DirectX 10/11/12" y arranca el juego con `--renderer d3d12`. ReShade funciona
+  como `dxgi.dll` junto al exe, el nombre probado (el instalador en sí no se ejecutó aquí; se extrajo su
+  DLL). Con el nombre `d3d12.dll` también se enganchó en una prueba de arranque.
+  Inicio abre el overlay de ReShade.
+- **Límites:** las capturas del propio port (F12) se leen antes de presentar el fotograma, así que no
+  llevan los efectos de ReShade: usa la tecla de captura de ReShade. Con el nombre `dxgi.dll`, ReShade
+  se carga también en `CrashLauncher.exe` (misma carpeta); el launcher sigue funcionando y ofrece DLSS.
+  No instales RenoDX genérico.
+- **Quitarlo:** borra `dxgi.dll`, `ReShade.ini`, `ReShade.log`, `ReShadePreset.ini` y `reshade-shaders\`
+  (y `screenshots\` si ReShade la creó). Sin ellos el juego queda como antes (comprobado: mismos
+  fotogramas de arranque con D3D12 y con Vulkan).
 
 **Estado:** en desarrollo. Debajo sigue el README del proyecto original.
 
