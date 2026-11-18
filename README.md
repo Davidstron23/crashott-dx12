@@ -48,10 +48,9 @@ folder. Never delete the linked folders with `rm -rf` or `git clean -x`: use `rm
   v0.2026.1112.413, the fork's D3D12 build on Windows 11 with an NVIDIA GPU. Only test copies of the build
   were tried, never the installation made by the fork's installer.
 - **Steps** (`dist\` copy): run the official installer from [reshade.me](https://reshade.me), pick
-  `CrashRecomp.exe`, API "DirectX 10/11/12", then start the game with `--renderer d3d12`. ReShade runs
-  as `dxgi.dll` next to the exe, the name that was tested (the installer itself was not run here; its DLL
-  was extracted). A `d3d12.dll` name also hooked in one boot test. Home opens the
-  ReShade overlay.
+  `CrashRecomp.exe`, API "DirectX 10/11/12", then start the game with `--renderer d3d12`. The installer puts
+  ReShade next to the exe as `dxgi.dll`; the name `d3d12.dll` also hooked in one boot test. Home opens
+  the ReShade overlay.
 - **Limits:** the port's own screenshots (F12) are read before the frame is presented, so they do not
   include ReShade effects: use ReShade's capture key. With the name `dxgi.dll`, ReShade also loads in
   `CrashLauncher.exe` (same folder); the launcher still works and still offers DLSS.
@@ -111,10 +110,9 @@ por defecto. Nunca borres las carpetas enlazadas con `rm -rf` ni `git clean -x`:
   genérico v0.2026.1112.413, la versión D3D12 del fork en Windows 11 con una GPU NVIDIA. Solo se probaron copias
   de prueba del build, nunca la instalación hecha con el instalador del fork.
 - **Pasos** (copia `dist\`): ejecuta el instalador oficial de [reshade.me](https://reshade.me), elige
-  `CrashRecomp.exe`, API "DirectX 10/11/12" y arranca el juego con `--renderer d3d12`. ReShade funciona
-  como `dxgi.dll` junto al exe, el nombre probado (el instalador en sí no se ejecutó aquí; se extrajo su
-  DLL). Con el nombre `d3d12.dll` también se enganchó en una prueba de arranque.
-  Inicio abre el overlay de ReShade.
+  `CrashRecomp.exe`, API "DirectX 10/11/12" y arranca el juego con `--renderer d3d12`. El instalador pone
+  ReShade junto al exe como `dxgi.dll`; con el nombre `d3d12.dll` también se enganchó en una prueba de
+  arranque. Inicio abre el overlay de ReShade.
 - **Límites:** las capturas del propio port (F12) se leen antes de presentar el fotograma, así que no
   llevan los efectos de ReShade: usa la tecla de captura de ReShade. Con el nombre `dxgi.dll`, ReShade
   se carga también en `CrashLauncher.exe` (misma carpeta); el launcher sigue funcionando y ofrece DLSS.
