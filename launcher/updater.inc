@@ -9,7 +9,7 @@
 // Included inside launcher.cpp's anonymous namespace (not in CRASH_INSTALLER).
 
 #ifdef _WIN32
-const wchar_t* LATEST_RELEASE = L"https://api.github.com/repos/VitoMiguelF/crashott-pc/releases/latest";
+const wchar_t* LATEST_RELEASE = L"https://api.github.com/repos/Davidstron23/crashott-dx12/releases/latest";  // this fork's, not the original's
 const wchar_t* SHORTCUT_NAME = L"Crash of the Titans - Definitive Edition.lnk";  // installer.inc's
 
 enum class UpdateState { Idle, Checking, UpToDate, Available, CheckFailed, Downloading, Downloaded, DownloadFailed, Started };

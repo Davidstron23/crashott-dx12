@@ -2,12 +2,10 @@
 # which has no game file and never gets one: setup.py --installer-only builds CrashSetup alone (no dump,
 # no generated/ppc), and the AppImage carries our source, the toolchain and third-party files only.
 #
-# - a v* tag: builds it and attaches it to that tag's release, adding its line to SHA256SUMS.txt (the
-#   other lines kept). A release that doesn't exist yet is waited for (gh release create pushes the
-#   tag before it uploads the other assets); after 30 min a draft release is made with it instead.
+# - not on tags: this fork's releases carry CrashSetup.exe only (a v* tag no longer builds it).
 # - by hand (Actions > Linux AppImage > Run workflow, or gh workflow run appimage.yml --ref <branch>):
 #   builds it from that branch as a workflow artifact; with "release" checked, on a tag's ref, it is
-#   attached to that release as above (if the tag's run didn't do it).
+#   attached to that tag's release, adding its line to SHA256SUMS.txt (the other lines kept).
 #
 # glibc: the runner's own (Ubuntu 24.04, 2.39) doesn't matter. CrashSetup is built by the bundled zig for
 # glibc 2.35 (tools/toolchain.py ZIG_TARGET), libSDL3.so.0 and libCrashDlss.so against the Steam Runtime 3
@@ -16,8 +14,6 @@
 name: Linux AppImage
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
