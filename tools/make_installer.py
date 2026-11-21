@@ -184,8 +184,9 @@ def collect(worktree=False, thirdparty=None):
             raise SystemExit("faltam no instalador (Direct3D 12): " + ", ".join(missing))
         # An older CrashDlss.dll builds and runs with Vulkan only: it must export the Direct3D 12 entry points.
         dlss = next(e[2] for e in entries if e[1] == "thirdparty/dlss/bin/CrashDlss.dll")
-        if b"CrashDlss_InitD3D12" not in Path(dlss).read_bytes():
-            raise SystemExit(f"{dlss} não tem CrashDlss_InitD3D12 (é anterior ao D3D12): cmake --build build --target CrashDlss")
+        data = Path(dlss).read_bytes()
+        if b"CrashDlss_InitD3D12" not in data or b"CrashDlss_EvaluateD3D12" not in data:
+            raise SystemExit(f"{dlss} não tem as entradas Direct3D 12 (é anterior ao D3D12): cmake --build build --target CrashDlss")
     # Similar files next to each other compress better; each component in chunks of its own.
     entries = [e for e in entries if e[0]]
     entries.sort(key=lambda e: (ORDER[e[0]], Path(e[1]).suffix.lower(), e[1]))

@@ -153,8 +153,8 @@ def main():
 
     sums = out / "SHA256SUMS.txt"
     # The Linux installer (CrashSetup-<tag>-x86_64.AppImage, tools/make_appimage.py): listed when it is
-    # here (built on a Linux machine and copied); for a release, .github/workflows/appimage.yml builds it
-    # on the tag and adds its line to the release's SHA256SUMS.txt itself.
+    # here (built on a Linux machine and copied); for a release, .github/workflows/appimage.yml (run by
+    # hand on the tag, workflow_dispatch) builds it and adds its line to the release's SHA256SUMS.txt itself.
     lines = [f"{sha256(f)}  {f.name}" for f in sorted([*out.glob("*.zip"), *out.glob("*.exe"), *out.glob("*.AppImage")])]
     sums.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(sums.read_text(encoding="utf-8"))

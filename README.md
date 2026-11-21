@@ -72,7 +72,8 @@ folder. Never delete the linked folders with `rm -rf` or `git clean -x`: use `rm
 - **Update:** an install made by the fork's installer shows UPDATE in the launcher. It asks the releases of
   *this* fork (not the original's) and offers a newer one. Tags follow `vMAJOR.MINOR-dx12[.N]` (for example
   `v1.07-dx12`, then `v1.07-dx12.1`): keep the rule, or the launcher's order of versions breaks.
-  A build from `dist\` has no UPDATE.
+  A build from `dist\` has no UPDATE. An install made by the original's installer still has the original's
+  launcher, whose UPDATE offers the original's newer versions without D3D12: install the fork instead.
 - **Antivirus and SmartScreen:** the installer is not code-signed, so Windows SmartScreen warns about it
   (More info, Run anyway); check it against `SHA256SUMS.txt` in the release. The installer compiles the
   game on your PC; some third-party antivirus programs block the new `.exe` files it creates and the
@@ -164,7 +165,9 @@ por defecto. Nunca borres las carpetas enlazadas con `rm -rf` ni `git clean -x`:
 - **Actualizar:** una instalación hecha con el instalador del fork muestra UPDATE en el launcher. Consulta
   las releases de *este* fork (no las del original) y ofrece una más nueva. Las etiquetas siguen
   `vMAYOR.MENOR-dx12[.N]` (por ejemplo `v1.07-dx12`, luego `v1.07-dx12.1`): respeta la regla, o el orden de
-  versiones del launcher falla. Una copia de `dist\` no tiene UPDATE.
+  versiones del launcher falla. Una copia de `dist\` no tiene UPDATE. Una instalación hecha con el
+  instalador del original sigue con el launcher del original, cuyo UPDATE ofrece sus versiones nuevas sin D3D12:
+  instala el fork en su lugar.
 - **Antivirus y SmartScreen:** el instalador no está firmado, así que SmartScreen de Windows avisa (Más
   información, Ejecutar de todas formas); compáralo con `SHA256SUMS.txt` de la release. El instalador compila
   el juego en tu PC; algunos antivirus de terceros bloquean los `.exe` nuevos que crea y la instalación

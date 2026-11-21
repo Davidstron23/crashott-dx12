@@ -153,7 +153,7 @@ jobs:
 
   release:
     needs: build
-    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.release
+    if: inputs.release
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
