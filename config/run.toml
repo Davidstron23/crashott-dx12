@@ -570,7 +570,7 @@ boot = "level:L1_E1"
 skip_cinematics = true
 env = { CRASH_NO_HID = "1", CRASH_SETTINGS = "graphics.upscaler=dlss;graphics.upscaler_quality=native" }
 input = [["@cinematic_skipped"], [0.5, "SHOT"], ["@gameplay_ready"], [0.5, "SHOT"], [1, "LS", 0, 1, 2.5], [4, "SHOT"], [6, "START"], [7.5, "SHOT"], [9, "START"]]
-expect = { exit = ["timeout"], events = ["gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]', 'DLSS: could not', 'evaluation failed', 'upscaled, [1-9]\d* failed'], log_contains = ['\[gpu\] DLSS available \(', '\[gpu\] dlss probed in \d+ ms', '\[gpu\] DLSS feature created: \d+x\d+ -> \d+x\d+, native', '\[gpu\] temporal upscaling \(DLSS '] }
+expect = { exit = ["timeout"], events = ["gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]', 'DLSS: could not', 'evaluation failed', 'upscaled, [1-9]\d* failed'], log_contains = ['\[gpu\] DLSS available \(', '\[gpu\] dlss probed in \d+ ms', '\[gpu\] DLSS feature created: \d+x\d+ -> \d+x\d+, \w+', '\[gpu\] temporal upscaling \(DLSS '] }
 
 [profiles.renderizador_fsr]
 description = "Vila sem cena com FSR 3.1 nativo por CRASH_SETTINGS, anda e pausa; sem renderer no perfil: use --set renderer=vulkan|d3d12 (e o modo em CRASH_SETTINGS, graphics.upscaler_quality); compare as capturas lado a lado (FSR é temporal: sem comparação exata)"

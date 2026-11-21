@@ -16,10 +16,13 @@ development tools stay in git):
 - as the "modding" component, installed only with ASSETS FOR MODDING: the asset export
   (tools/assets.py and the scripts it runs, tools/assettool) and numpy / Pillow;
 - the third-party files setup.py would otherwise download, so the install works offline: FFmpeg's
-  LGPL DLLs and headers, dxcompiler.dll with its licenses, FidelityFX's amd_fidelityfx_vk.dll and
-  headers; and, as the "dlss" component the installer leaves out on PCs without an NVIDIA RTX GPU,
-  NVIDIA's nvngx_dlss.dll and our CrashDlss.dll (build\\CrashDlss.dll: our code with the NGX static
-  library inside, in object code form; no DLSS SDK header or library is shipped).
+  LGPL DLLs and headers, dxcompiler.dll and dxil.dll with their licenses, FidelityFX's
+  amd_fidelityfx_vk.dll and amd_fidelityfx_dx12.dll with the headers of both (the Direct3D 12
+  renderer needs the last four; collect() stops naming what is missing); and,
+  as the "dlss" component the installer leaves out on PCs without an NVIDIA RTX GPU, NVIDIA's nvngx_dlss.dll
+  and our CrashDlss.dll (build\\CrashDlss.dll: our code with the NGX static library inside, in
+  object code form, with the Direct3D 12 entry points; no DLSS SDK header or
+  library is shipped).
 The optional data (subtitles, HD AI Remaster) stays in the release assets, downloaded by setup.py.
 
 Format (read by launcher/installer_payload.inc):
@@ -63,6 +66,10 @@ THIRDPARTY = [
     ("dlss", "thirdparty/dlss/bin/nvngx_dlss.dll", ROOT / "thirdparty" / "dlss" / "bin" / "nvngx_dlss.dll"),
     ("dlss", "thirdparty/dlss/bin/CrashDlss.dll", ROOT / "build" / "CrashDlss.dll"),
 ]
+# What the Direct3D 12 renderer needs at run time or to build; collect() stops if any is missing.
+REQUIRED = ("thirdparty/fsr/bin/amd_fidelityfx_vk.dll", "thirdparty/fsr/bin/amd_fidelityfx_dx12.dll",
+            "thirdparty/fsr/include/ffx_api/vk/ffx_api_vk.h", "thirdparty/fsr/include/ffx_api/dx12/ffx_api_dx12.h",
+            "thirdparty/dxc/bin/dxcompiler.dll", "thirdparty/dxc/bin/dxil.dll")
 SKIP_PARTS = {"__pycache__", "_unpack"}
 # What the install needs of the repository: the build (CMake, the runtime, the launcher, the
 # recompiler's config and patch), the play folder (languages, licenses) and setup.py's tools.
@@ -170,6 +177,16 @@ def collect(worktree=False, thirdparty=None):
             for f in sorted(source.rglob("*")):
                 if f.is_file():
                     entries.append((part, f"{target}/{f.relative_to(source).as_posix()}", f))
+    if thirdparty is None:
+        have = {e[1] for e in entries}
+        missing = [r for r in REQUIRED if r not in have]
+        if missing:
+            raise SystemExit("faltam no instalador (Direct3D 12): " + ", ".join(missing))
+        # An older CrashDlss.dll builds and runs with Vulkan only: it must export the Direct3D 12 entry points.
+        dlss = next(e[2] for e in entries if e[1] == "thirdparty/dlss/bin/CrashDlss.dll")
+        data = Path(dlss).read_bytes()
+        if b"CrashDlss_InitD3D12" not in data or b"CrashDlss_EvaluateD3D12" not in data:
+            raise SystemExit(f"{dlss} não tem as entradas Direct3D 12 (é anterior ao D3D12): cmake --build build --target CrashDlss")
     # Similar files next to each other compress better; each component in chunks of its own.
     entries = [e for e in entries if e[0]]
     entries.sort(key=lambda e: (ORDER[e[0]], Path(e[1]).suffix.lower(), e[1]))

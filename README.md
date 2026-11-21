@@ -59,6 +59,36 @@ folder. Never delete the linked folders with `rm -rf` or `git clean -x`: use `rm
   (and `screenshots\` if ReShade made it). With them gone, the game is as before (checked: same boot
   frames with D3D12 and Vulkan).
 
+**Install, update and release** (Windows)
+
+- **Install:** download `CrashSetup-<tag>.exe` from this fork's
+  [releases](https://github.com/Davidstron23/crashott-dx12/releases) and run it, as with the original
+  installer (it needs your own copy of the game). It uses the same folder, shortcuts and registry key as
+  the original, so it **replaces** an installed CrashRecomp: the saves, settings, mods and the copy of the
+  game stay. Direct3D 12 and FSR need nothing extra (DLSS needs an NVIDIA RTX GPU); Vulkan is still the default.
+- **Do not go back in versions:** the fork is based on v1.07. If you have the original v1.08 or later, its
+  saves and settings are newer than this build's; installing the fork over it is a downgrade. Back up
+  `userdata\` first, or use another folder.
+- **Update:** an install made by the fork's installer shows UPDATE in the launcher. It asks the releases of
+  *this* fork (not the original's) and offers a newer one. Tags follow `vMAJOR.MINOR-dx12[.N]` (for example
+  `v1.07-dx12`, then `v1.07-dx12.1`): keep the rule, or the launcher's order of versions breaks.
+  A build from `dist\` has no UPDATE. An install made by the original's installer still has the original's
+  launcher, whose UPDATE offers the original's newer versions without D3D12: install the fork instead.
+- **Antivirus and SmartScreen:** the installer is not code-signed, so Windows SmartScreen warns about it
+  (More info, Run anyway); check it against `SHA256SUMS.txt` in the release. The installer compiles the
+  game on your PC; some third-party antivirus programs block the new `.exe` files it creates and the
+  install fails with "Permission denied" or "Access is denied" while CMake configures the build (seen with
+  Surfshark). Exclude the install folder in your antivirus, or try again.
+- **Build a release** (maintainers; a clean clone, it never reads an installation):
+  `git clone` the repository, `python tools\toolchain.py fetch`, `python tools\setup.py --installer-only`
+  (downloads and checks XenonRecomp and the third-party files), copy `build\CrashDlss.dll` from a
+  development build (it needs the game's recompiled code, so it cannot be built in the clone; rebuild it
+  with `cmake --build build --target CrashDlss` if `runtime\gpu\dlss_module\` changed), then
+  `python tools\make_release.py <tag> --only installer`. The installer builder stops, naming the file,
+  if a Direct3D 12 file (FSR's `amd_fidelityfx_dx12.dll`, `dxil.dll`...) is missing or `CrashDlss.dll` has
+  no Direct3D 12 entry points. Publishing is a separate, manual step: `release\<tag>\` holds
+  `CrashSetup-<tag>.exe` and `SHA256SUMS.txt`. The Linux AppImage workflow no longer runs on tags.
+
 **Status:** in development. The original project's README follows below.
 
 ## Español
@@ -120,6 +150,39 @@ por defecto. Nunca borres las carpetas enlazadas con `rm -rf` ni `git clean -x`:
 - **Quitarlo:** borra `dxgi.dll`, `ReShade.ini`, `ReShade.log`, `ReShadePreset.ini` y `reshade-shaders\`
   (y `screenshots\` si ReShade la creó). Sin ellos el juego queda como antes (comprobado: mismos
   fotogramas de arranque con D3D12 y con Vulkan).
+
+**Instalar, actualizar y publicar** (Windows)
+
+- **Instalar:** descarga `CrashSetup-<etiqueta>.exe` de las
+  [releases](https://github.com/Davidstron23/crashott-dx12/releases) de este fork y ejecútalo, como el
+  instalador original (hace falta tu propia copia del juego). Usa la misma carpeta, los mismos accesos y la
+  misma clave de registro que el original, así que **sustituye** a un CrashRecomp instalado: las partidas,
+  las opciones, los mods y la copia del juego se quedan. Direct3D 12 y FSR no piden nada más (DLSS pide una GPU NVIDIA RTX); Vulkan
+  sigue por defecto.
+- **No bajes de versión:** el fork parte de la v1.07. Si tienes el original v1.08 o posterior, sus partidas
+  y opciones son más nuevas que las de esta versión; instalar el fork encima es bajar de versión. Haz
+  antes una copia de `userdata\` o usa otra carpeta.
+- **Actualizar:** una instalación hecha con el instalador del fork muestra UPDATE en el launcher. Consulta
+  las releases de *este* fork (no las del original) y ofrece una más nueva. Las etiquetas siguen
+  `vMAYOR.MENOR-dx12[.N]` (por ejemplo `v1.07-dx12`, luego `v1.07-dx12.1`): respeta la regla, o el orden de
+  versiones del launcher falla. Una copia de `dist\` no tiene UPDATE. Una instalación hecha con el
+  instalador del original sigue con el launcher del original, cuyo UPDATE ofrece sus versiones nuevas sin D3D12:
+  instala el fork en su lugar.
+- **Antivirus y SmartScreen:** el instalador no está firmado, así que SmartScreen de Windows avisa (Más
+  información, Ejecutar de todas formas); compáralo con `SHA256SUMS.txt` de la release. El instalador compila
+  el juego en tu PC; algunos antivirus de terceros bloquean los `.exe` nuevos que crea y la instalación
+  falla con "Permission denied" o "Access is denied" mientras CMake configura la compilación (visto con
+  Surfshark). Excluye la carpeta de instalación en tu antivirus o inténtalo otra vez.
+- **Construir una release** (mantenedores; un clon limpio, nunca lee una instalación): `git clone` del
+  repositorio, `python tools\toolchain.py fetch`, `python tools\setup.py --installer-only` (descarga y
+  comprueba XenonRecomp y los archivos de terceros), copiar `build\CrashDlss.dll` de un build de desarrollo
+  (necesita el código recompilado del juego, así que no se puede compilar en el clon; recompílala con
+  `cmake --build build --target CrashDlss` si cambió `runtime\gpu\dlss_module\`) y
+  `python tools\make_release.py <etiqueta> --only installer`. El constructor del instalador para,
+  nombrándolo, si falta un archivo de Direct3D 12 (`amd_fidelityfx_dx12.dll` de FSR, `dxil.dll`...) o si
+  `CrashDlss.dll` no tiene los puntos de entrada de Direct3D 12. Publicar es un paso aparte, a mano:
+  `release\<etiqueta>\` tiene `CrashSetup-<etiqueta>.exe` y `SHA256SUMS.txt`. El workflow del AppImage de
+  Linux ya no se lanza con las etiquetas.
 
 **Estado:** en desarrollo. Debajo sigue el README del proyecto original.
 

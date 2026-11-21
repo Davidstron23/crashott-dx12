@@ -251,7 +251,7 @@ Measured here (16 threads): the whole install, with the 3.1 GB copy of the dump 
 CrashOTTDE to the menu. Inside the AppImage a restart (`Relaunch`) runs `$APPIMAGE` again, not the
 exe in the mount, which goes away with this process. Not tried yet: the dialogs by hand, a Steam Deck.
 
-The release's AppImage is built by `.github/workflows/appimage.yml` on GitHub's Ubuntu 24.04 runner,
+The release's AppImage is built by `.github/workflows/appimage.yml` (run by hand on a tag) on GitHub's Ubuntu 24.04 runner,
 which has no game file: `toolchain.py fetch`, `linux_sdl3.py`, `linux_dlss.py`, then
 `setup.py --installer-only` (XenonRecomp's source, thirdparty/ and `cmake --build build --target
 CrashSetup` with `-DCRASH_INSTALLER_ONLY=ON`, which leaves out the game targets and so needs no

@@ -24,7 +24,7 @@ with the type2 runtime 20251108, both pinned by SHA-256 and kept in build/downlo
 
 Build first: python3 tools/toolchain.py fetch, python3 tools/linux_sdl3.py, python3 tools/linux_dlss.py,
 then python3 tools/setup.py --installer-only (XenonRecomp, thirdparty/, build/CrashSetup; no game
-needed). The release's AppImage is built so by .github/workflows/appimage.yml on a v* tag, on GitHub's
+needed). The release's AppImage is built so by .github/workflows/appimage.yml (run by hand on a tag), on GitHub's
 runner (it has no game file); a machine with the game may run plain python3 tools/setup.py instead.
 """
 import argparse
