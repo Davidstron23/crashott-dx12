@@ -156,6 +156,11 @@ Out main(float4 position : SV_Position)
     // line that the original does not have. When this pixel is within two small steps (the gather's)
     // of the line through the surface 8 pixels away on both sides, the normal comes from there:
     // the same on flat or smooth surfaces, the ground's across a seam, and depth edges keep theirs.
+    // The depth must also be that of one surface seen from both sides. Next to a silhouette one side is the
+    // character (z 2) and the other the background (z 10): the chord is almost along the view ray, every
+    // background pixel is "near" it, and its camera-facing normal made the AO change in a band along the
+    // outline. So the two samples must be within 30 % of this pixel's z of each other (seams, creases and
+    // sloping ground are; a silhouette is not).
     // (4 pixels left the wider risers near the camera; 16 spread the AO of real creases.)
     float seam = 2.0 * (0.07 + 0.004 * z);
     [unroll] for (int i = 0; i < 2; i++)
@@ -165,7 +170,7 @@ Out main(float4 position : SV_Position)
         if (za <= 0.0 || zb <= 0.0)
             continue;
         float3 a = PosAt(p - d, za), ab = PosAt(p + d, zb) - a;
-        if (length(cross(c - a, ab)) < seam * length(ab))
+        if (abs(za - zb) < 0.3 * z && length(cross(c - a, ab)) < seam * length(ab))
         {
             if (i == 0)
                 dx = ab;
