@@ -417,7 +417,7 @@ Alt+Enter fullscreen, F8 lighting remaster on/off, and with **DEFINITIVE EDITION
 Default settings are the original experience (1280x720, 30 fps, no upscaler, extras off). Turn things on
 in **SETTINGS** (main menu or pause > OPTIONS) or in the launcher; for the HD AI Remaster, install it and
 then switch **DEFINITIVE EDITION > HD AI REMASTER** on. The launcher opens on its simple view: **LIGHTING
-REMASTER** turns on the whole lighting remaster (SSAO high, indirect light, contact and soft shadows),
+REMASTER** turns on the whole lighting remaster (indirect light, contact and soft shadows; SSAO stays off),
 ORIGINAL turns it off, and CUSTOM means a mix set one by one; **ADVANCED** (bottom-right corner, or Y / F2)
 shows every option, and the launcher remembers the last view. Mods' HD texture packs need no option: they
 load from `mods\` by themselves (`[graphics] hd_textures = false` in `settings.toml` turns them off).
@@ -691,8 +691,8 @@ cheia, F8 liga/desliga o remaster da iluminação e, com **DEFINITIVE EDITION > 
 As opções padrão são a experiência original (1280x720, 30 fps, sem upscaler, extras desligados). Ligue o
 que quiser em **SETTINGS** (menu principal ou pausa > OPÇÕES) ou no launcher. Para o HD AI Remaster,
 instale-o e ligue **DEFINITIVE EDITION > HD AI REMASTER**. Para jogar em português, IDIOMA = PORTUGUÊS (BR).
-O launcher abre na vista simples: **ILUMINAÇÃO REMASTER** liga todo o remaster da iluminação (SSAO alta, luz
-indireta, sombras de contato e suaves), ORIGINAL desliga, e PERSONALIZADO quer dizer uma mistura ajustada uma a
+O launcher abre na vista simples: **ILUMINAÇÃO REMASTER** liga todo o remaster da iluminação (luz indireta,
+sombras de contato e suaves; o SSAO fica desligado), ORIGINAL desliga, e PERSONALIZADO quer dizer uma mistura ajustada uma a
 uma; **AVANÇADO** (canto inferior direito, ou Y / F2) mostra todas as opções, e o launcher lembra a última vista.
 Os pacotes de texturas HD dos mods não precisam de opção: carregam sozinhos de `mods\` (`[graphics]
 hd_textures = false` no `settings.toml` os desliga).
