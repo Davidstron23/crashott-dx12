@@ -501,10 +501,10 @@ namespace settings::options
             {
             case LightingPreset::Original:
                 return { t({ "The game's original lighting.", "A iluminação original do jogo." }),
-                         t({ "REMASTER: SSAO, indirect light, contact and soft shadows.", "REMASTER: SSAO, luz indireta, sombras de contato e suaves." }) };
+                         t({ "REMASTER: indirect light, contact and soft shadows.", "REMASTER: luz indireta, sombras de contato e suaves." }) };
             case LightingPreset::Remaster:
-                return { t({ "Ambient occlusion, indirect light, contact and", "Oclusão de ambiente, luz indireta, sombras de" }),
-                         t({ "soft shadows (each one in ADVANCED). F8 toggles.", "contato e suaves (cada uma no AVANÇADO). F8 alterna." }) };
+                return { t({ "Indirect light, contact and soft shadows (each one", "Luz indireta, sombras de contato e suaves (cada" }),
+                         t({ "and SSAO in ADVANCED). F8 toggles.", "uma e o SSAO no AVANÇADO). F8 alterna." }) };
             default:
                 return { t({ "A mix of the lighting options, set one by one in", "Uma mistura das opções de iluminação, ajustadas em" }),
                          t({ "ADVANCED > DEFINITIVE EDITION.", "AVANÇADO > DEFINITIVE EDITION." }) };
@@ -713,7 +713,9 @@ namespace settings::options
         if (preset == LightingPreset::Custom)
             return;
         bool on = preset == LightingPreset::Remaster;
-        values.ssao = on ? AoQuality::High : AoQuality::Off;
+        // SSAO stays out of REMASTER: next to anything in front of the background (Crash, plants, the ice) it draws a
+        // halo that no thickness test removed without losing the contacts. It is still in ADVANCED, one by one.
+        values.ssao = AoQuality::Off;
         values.gi = on;
         if (on)
             values.giIntensity = Values().giIntensity;

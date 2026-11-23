@@ -23,7 +23,7 @@ cbuffer constants : register(b0)
     float4 sizes;         // AO target width, height; scene width, height
     float4 aoParams;      // radius, thickness (world units), AO strength, indirect light intensity
     float4 lightView;     // contact shadow ray direction (world up, in view space), strength (0: none)
-    float4 shadowParams;  // ray length, thickness (world units), far fade end (view z), unused
+    float4 shadowParams;  // ray length, thickness (world units), far fade end (view z), near fade end (view z; 0: none)
     uint4 control;        // x: flags, y: frame, z: slices, w: steps per side
 };
 Texture2D<float4> t0 : register(t0);
@@ -150,6 +150,34 @@ Out main(float4 position : SV_Position)
     bool down = zd > 0.0 && (zu <= 0.0 || abs(zd - z) < abs(zu - z));
     float3 dx = right ? PosAt(p + int2(1, 0), zr) - c : (zl > 0.0 ? c - PosAt(p - int2(1, 0), zl) : float3(1, 0, 0));
     float3 dy = down ? PosAt(p + int2(0, 1), zd) - c : (zu > 0.0 ? c - PosAt(p - int2(0, 1), zu) : float3(0, -1, 0));
+    // Seams between the meshes of the terrain and of the walls (the village) are steps of a few
+    // centimetres whose riser shows as a band of 1-3 pixels facing the camera. With the riser's own
+    // normal the flat ground in front of it is a wall of occluders, and the AO draws a long thin dark
+    // line that the original does not have. When this pixel is within two small steps (the gather's)
+    // of the line through the surface 8 pixels away on both sides, the normal comes from there:
+    // the same on flat or smooth surfaces, the ground's across a seam, and depth edges keep theirs.
+    // The depth must also be that of one surface seen from both sides. Next to a silhouette one side is the
+    // character (z 2) and the other the background (z 10): the chord is almost along the view ray, every
+    // background pixel is "near" it, and its camera-facing normal made the AO change in a band along the
+    // outline. So the two samples must be within 30 % of this pixel's z of each other (seams, creases and
+    // sloping ground are; a silhouette is not).
+    // (4 pixels left the wider risers near the camera; 16 spread the AO of real creases.)
+    float seam = 2.0 * (0.07 + 0.004 * z);
+    [unroll] for (int i = 0; i < 2; i++)
+    {
+        int2 d = i == 0 ? int2(8, 0) : int2(0, 8);
+        float za = LoadZ(p - d), zb = LoadZ(p + d);
+        if (za <= 0.0 || zb <= 0.0)
+            continue;
+        float3 a = PosAt(p - d, za), ab = PosAt(p + d, zb) - a;
+        if (abs(za - zb) < 0.3 * z && length(cross(c - a, ab)) < seam * length(ab))
+        {
+            if (i == 0)
+                dx = ab;
+            else
+                dy = ab;
+        }
+    }
     float3 n = cross(dx, dy);
     n = dot(n, n) > 1e-20 ? normalize(n) : -normalize(c);
     if (dot(n, c) > 0.0)
@@ -201,7 +229,7 @@ Out main(float4 position : SV_Position)
             float3 projN = N - axis * dot(N, axis) / max(dot(axis, axis), 1e-8);
             float cosN = saturate(dot(projN, V) / max(length(projN), 1e-5));
             float n = (dot(ortho, projN) >= 0.0 ? 1.0 : -1.0) * FastAcos(cosN);
-            uint mask = 0u;
+            uint mask = 0u, hidden = 0u;
             [loop] for (uint side = 0; side < 2u; side++)
             {
                 float sgn = side == 0u ? 1.0 : -1.0;
@@ -222,6 +250,18 @@ Out main(float4 position : SV_Position)
                     // Small steps (terrain seams, decals) barely above the surface: no occluders.
                     if (dot(delta, N) < 0.07 + 0.004 * z)
                         continue;
+                    // A sample that is both nearer the camera than P and in front of P's plane (along its view ray)
+                    // by more than the assumed thickness is another object in front (Crash, a plant), not what
+                    // surrounds P: counting it drew a dark halo on the background all along near silhouettes.
+                    // Bumps of the same ground (nearer, but close to the plane) and Crash's body over the ground at
+                    // his feet (high above the plane, but at the same z) are not, and keep their AO.
+                    // From one to two thicknesses it occludes half; beyond, it hides this side of the slice (below).
+                    float ahead = min(z - sz, dot(delta, N) / max(dot(N, -normalize(P + delta)), 0.1));
+                    if (ahead > 2.0 * aoParams.y)
+                    {
+                        hidden |= 1u << side;
+                        continue;
+                    }
                     float3 L = delta / len;
                     float front = FastAcos(dot(L, V));
                     float back = FastAcos(dot(normalize(delta - V * aoParams.y), V));
@@ -231,6 +271,8 @@ Out main(float4 position : SV_Position)
                     // Farther than the radius: occludes less, fading out at twice the radius.
                     if (len > radius)
                         bits &= (uint(saturate(2.0 - len / radius) * 32.0) >= 16u) ? 0xFFFFFFFFu : 0x55555555u;
+                    if (ahead > aoParams.y)
+                        bits &= 0x55555555u;
                     if (control.x & FLAG_IL)
                     {
                         uint fresh = bits & ~mask;
@@ -245,7 +287,19 @@ Out main(float4 position : SV_Position)
                     mask |= bits;
                 }
             }
-            visibility += 1.0 - float(countbits(mask)) * (1.0 / 32.0);
+            // A side that ran into another object in front cannot see what surrounds P there: counted as open, it
+            // lit up a band of the background all around Crash, the mailbox and the ice (12-50 px at 1440p, more
+            // the more screen the object covers; the clear aura of the UAT). It takes the occlusion of the other
+            // side of the same slice instead (side 0 holds the sectors above the view direction, side 1 below).
+            // Both sides hidden: open, as before.
+            uint upper = SectorBits(saturate(0.5 - n / PI), 1.0);
+            float upperWidth = float(countbits(upper)) * (1.0 / 32.0), lowerWidth = 1.0 - upperWidth;
+            float occludedUpper = float(countbits(mask & upper)) * (1.0 / 32.0), occludedLower = float(countbits(mask & ~upper)) * (1.0 / 32.0);
+            if (hidden == 1u && lowerWidth > 0.0)
+                occludedUpper = occludedLower / lowerWidth * upperWidth;
+            else if (hidden == 2u && upperWidth > 0.0)
+                occludedLower = occludedUpper / upperWidth * lowerWidth;
+            visibility += 1.0 - occludedUpper - occludedLower;
         }
         visibility /= float(slices);
         indirect /= float(slices);
@@ -283,7 +337,9 @@ Out main(float4 position : SV_Position)
                     break;
                 }
             }
-            o.s = 1.0 - occlusion * lightView.w * smoothstep(0.0, 0.3, ndl) * fade;
+            // Only on surfaces that face up (ground, tops): on walls and sloping rocks the march runs along the
+            // surface and draws a shifted dark copy of whatever is in front of it (vines, Crash's outline).
+            o.s = 1.0 - occlusion * lightView.w * smoothstep(0.6, 0.9, ndl) * fade;
         }
     }
     return o;
@@ -439,15 +495,22 @@ float4 main(float4 position : SV_Position) : SV_Target
         a = t2.Load(int3(p, 0));
         s = t3.Load(int3(p, 0)).x;
     }
+    // The pass does not know what is a character. Faces are small, curved and near the camera (view z 1-4 in the
+    // close-ups of the cutscenes), where the AO, the contact shadow and the indirect light of the whole head and
+    // body turn them into plasticine; floors and walls of those shots are farther (z > 5), and the shadow under
+    // Crash in the village is at z 4.5-7.5. So the three fade out below shadowParams.w (full strength from it, none from half of it).
+    float nearK = shadowParams.w > 0.0 ? smoothstep(0.5 * shadowParams.w, shadowParams.w, z) : 1.0;
     float ao = 1.0;
     if (control.x & FLAG_AO)
     {
         ao = lerp(1.0, a.a, aoParams.z);
+        ao = lerp(1.0, ao, nearK);
         // Bright pixels (emissive, highlights, the sun on a wall) keep most of their light.
         float bright = smoothstep(0.75, 1.0, max(c.r, max(c.g, c.b)));
         ao = lerp(ao, 1.0, 0.6 * bright);
     }
-    float3 indirect = (control.x & FLAG_IL) ? a.rgb * aoParams.w : 0.0;
+    s = lerp(1.0, s, nearK);
+    float3 indirect = (control.x & FLAG_IL) ? a.rgb * aoParams.w * nearK : 0.0;
     if (control.x & FLAG_SHOW_AO)
         return float4(ao.xxx, c.a);
     if (control.x & FLAG_SHOW_IL)
@@ -496,7 +559,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
         struct Tuning
         {
             float radius = 1.6f;          // AO / indirect light reach
-            float thickness = 0.5f;       // assumed thickness of what the depth buffer shows
+            // Assumed thickness of what the depth buffer shows; also where a sample in front starts to count as another
+            // object (the gather). 0.5 took a third of the shadow under Crash with the halo; 0.7 keeps about 90 %.
+            float thickness = 0.7f;
             float aoLow = 0.9f, aoHigh = 1.0f;  // AO strength per quality
             float gi = 3.0f;              // indirect light at 100%
             float shadowLength = 1.2f;    // contact shadow ray (upwards)
@@ -504,6 +569,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             float shadowStrength = 0.5f;
             float fade = 90.0f;           // everything fades out from 0.6x to 1x this view distance
             float sky = 0.9f;             // fraction of the far plane counted as sky
+            float nearFade = 5.5f;        // AO, contact shadow and indirect light fade out below this view distance (none below half of it)
         } g_tuning;
 
         bool g_ready = false;
@@ -553,7 +619,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
                     { "radius", &g_tuning.radius }, { "thickness", &g_tuning.thickness }, { "ao_low", &g_tuning.aoLow },
                     { "ao_high", &g_tuning.aoHigh }, { "gi", &g_tuning.gi }, { "shadow_length", &g_tuning.shadowLength },
                     { "shadow_thickness", &g_tuning.shadowThickness }, { "shadow", &g_tuning.shadowStrength }, { "fade", &g_tuning.fade },
-                    { "sky", &g_tuning.sky },
+                    { "sky", &g_tuning.sky }, { "near", &g_tuning.nearFade },
                 };
                 bool known = false;
                 for (auto& field : fields)
@@ -858,6 +924,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
         constants.shadowParams[0] = g_tuning.shadowLength;
         constants.shadowParams[1] = g_tuning.shadowThickness;
         constants.shadowParams[2] = g_tuning.fade;
+        constants.shadowParams[3] = g_tuning.nearFade;
 
         static const bool noTemporal = getenv("CRASH_LIGHTING_NO_TEMPORAL") != nullptr;  // debug: no accumulation
         static const uint32_t show = [] {
