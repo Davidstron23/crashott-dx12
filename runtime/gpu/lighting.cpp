@@ -250,6 +250,15 @@ Out main(float4 position : SV_Position)
                     // Small steps (terrain seams, decals) barely above the surface: no occluders.
                     if (dot(delta, N) < 0.07 + 0.004 * z)
                         continue;
+                    // A sample that is both nearer the camera than P and in front of P's plane (along its view ray)
+                    // by more than the assumed thickness is another object in front (Crash, a plant), not what
+                    // surrounds P: counting it drew a dark halo on the background all along near silhouettes.
+                    // Bumps of the same ground (nearer, but close to the plane) and Crash's body over the ground at
+                    // his feet (high above the plane, but at the same z) are not, and keep their AO.
+                    // From one to two thicknesses it occludes half, beyond, nothing.
+                    float ahead = min(z - sz, dot(delta, N) / max(dot(N, -normalize(P + delta)), 0.1));
+                    if (ahead > 2.0 * aoParams.y)
+                        continue;
                     float3 L = delta / len;
                     float front = FastAcos(dot(L, V));
                     float back = FastAcos(dot(normalize(delta - V * aoParams.y), V));
@@ -259,6 +268,8 @@ Out main(float4 position : SV_Position)
                     // Farther than the radius: occludes less, fading out at twice the radius.
                     if (len > radius)
                         bits &= (uint(saturate(2.0 - len / radius) * 32.0) >= 16u) ? 0xFFFFFFFFu : 0x55555555u;
+                    if (ahead > aoParams.y)
+                        bits &= 0x55555555u;
                     if (control.x & FLAG_IL)
                     {
                         uint fresh = bits & ~mask;
@@ -311,7 +322,9 @@ Out main(float4 position : SV_Position)
                     break;
                 }
             }
-            o.s = 1.0 - occlusion * lightView.w * smoothstep(0.0, 0.3, ndl) * fade;
+            // Only on surfaces that face up (ground, tops): on walls and sloping rocks the march runs along the
+            // surface and draws a shifted dark copy of whatever is in front of it (vines, Crash's outline).
+            o.s = 1.0 - occlusion * lightView.w * smoothstep(0.6, 0.9, ndl) * fade;
         }
     }
     return o;
@@ -531,7 +544,9 @@ float4 main(uint id : SV_VertexID) : SV_Position
         struct Tuning
         {
             float radius = 1.6f;          // AO / indirect light reach
-            float thickness = 0.5f;       // assumed thickness of what the depth buffer shows
+            // Assumed thickness of what the depth buffer shows; also where a sample in front starts to count as another
+            // object (the gather). 0.5 took a third of the shadow under Crash with the halo; 0.7 keeps about 90 %.
+            float thickness = 0.7f;
             float aoLow = 0.9f, aoHigh = 1.0f;  // AO strength per quality
             float gi = 3.0f;              // indirect light at 100%
             float shadowLength = 1.2f;    // contact shadow ray (upwards)
