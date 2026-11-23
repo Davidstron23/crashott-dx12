@@ -229,7 +229,7 @@ Out main(float4 position : SV_Position)
             float3 projN = N - axis * dot(N, axis) / max(dot(axis, axis), 1e-8);
             float cosN = saturate(dot(projN, V) / max(length(projN), 1e-5));
             float n = (dot(ortho, projN) >= 0.0 ? 1.0 : -1.0) * FastAcos(cosN);
-            uint mask = 0u;
+            uint mask = 0u, hidden = 0u;
             [loop] for (uint side = 0; side < 2u; side++)
             {
                 float sgn = side == 0u ? 1.0 : -1.0;
@@ -255,10 +255,13 @@ Out main(float4 position : SV_Position)
                     // surrounds P: counting it drew a dark halo on the background all along near silhouettes.
                     // Bumps of the same ground (nearer, but close to the plane) and Crash's body over the ground at
                     // his feet (high above the plane, but at the same z) are not, and keep their AO.
-                    // From one to two thicknesses it occludes half, beyond, nothing.
+                    // From one to two thicknesses it occludes half; beyond, it hides this side of the slice (below).
                     float ahead = min(z - sz, dot(delta, N) / max(dot(N, -normalize(P + delta)), 0.1));
                     if (ahead > 2.0 * aoParams.y)
+                    {
+                        hidden |= 1u << side;
                         continue;
+                    }
                     float3 L = delta / len;
                     float front = FastAcos(dot(L, V));
                     float back = FastAcos(dot(normalize(delta - V * aoParams.y), V));
@@ -284,7 +287,19 @@ Out main(float4 position : SV_Position)
                     mask |= bits;
                 }
             }
-            visibility += 1.0 - float(countbits(mask)) * (1.0 / 32.0);
+            // A side that ran into another object in front cannot see what surrounds P there: counted as open, it
+            // lit up a band of the background all around Crash, the mailbox and the ice (12-50 px at 1440p, more
+            // the more screen the object covers; the clear aura of the UAT). It takes the occlusion of the other
+            // side of the same slice instead (side 0 holds the sectors above the view direction, side 1 below).
+            // Both sides hidden: open, as before.
+            uint upper = SectorBits(saturate(0.5 - n / PI), 1.0);
+            float upperWidth = float(countbits(upper)) * (1.0 / 32.0), lowerWidth = 1.0 - upperWidth;
+            float occludedUpper = float(countbits(mask & upper)) * (1.0 / 32.0), occludedLower = float(countbits(mask & ~upper)) * (1.0 / 32.0);
+            if (hidden == 1u && lowerWidth > 0.0)
+                occludedUpper = occludedLower / lowerWidth * upperWidth;
+            else if (hidden == 2u && upperWidth > 0.0)
+                occludedLower = occludedUpper / upperWidth * lowerWidth;
+            visibility += 1.0 - occludedUpper - occludedLower;
         }
         visibility /= float(slices);
         indirect /= float(slices);
