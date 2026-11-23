@@ -150,6 +150,29 @@ Out main(float4 position : SV_Position)
     bool down = zd > 0.0 && (zu <= 0.0 || abs(zd - z) < abs(zu - z));
     float3 dx = right ? PosAt(p + int2(1, 0), zr) - c : (zl > 0.0 ? c - PosAt(p - int2(1, 0), zl) : float3(1, 0, 0));
     float3 dy = down ? PosAt(p + int2(0, 1), zd) - c : (zu > 0.0 ? c - PosAt(p - int2(0, 1), zu) : float3(0, -1, 0));
+    // Seams between the meshes of the terrain and of the walls (the village) are steps of a few
+    // centimetres whose riser shows as a band of 1-3 pixels facing the camera. With the riser's own
+    // normal the flat ground in front of it is a wall of occluders, and the AO draws a long thin dark
+    // line that the original does not have. When this pixel is within two small steps (the gather's)
+    // of the line through the surface 8 pixels away on both sides, the normal comes from there:
+    // the same on flat or smooth surfaces, the ground's across a seam, and depth edges keep theirs.
+    // (4 pixels left the wider risers near the camera; 16 spread the AO of real creases.)
+    float seam = 2.0 * (0.07 + 0.004 * z);
+    [unroll] for (int i = 0; i < 2; i++)
+    {
+        int2 d = i == 0 ? int2(8, 0) : int2(0, 8);
+        float za = LoadZ(p - d), zb = LoadZ(p + d);
+        if (za <= 0.0 || zb <= 0.0)
+            continue;
+        float3 a = PosAt(p - d, za), ab = PosAt(p + d, zb) - a;
+        if (length(cross(c - a, ab)) < seam * length(ab))
+        {
+            if (i == 0)
+                dx = ab;
+            else
+                dy = ab;
+        }
+    }
     float3 n = cross(dx, dy);
     n = dot(n, n) > 1e-20 ? normalize(n) : -normalize(c);
     if (dot(n, c) > 0.0)
