@@ -23,7 +23,7 @@ cbuffer constants : register(b0)
     float4 sizes;         // AO target width, height; scene width, height
     float4 aoParams;      // radius, thickness (world units), AO strength, indirect light intensity
     float4 lightView;     // contact shadow ray direction (world up, in view space), strength (0: none)
-    float4 shadowParams;  // ray length, thickness (world units), far fade end (view z), unused
+    float4 shadowParams;  // ray length, thickness (world units), far fade end (view z), near fade end (view z; 0: none)
     uint4 control;        // x: flags, y: frame, z: slices, w: steps per side
 };
 Texture2D<float4> t0 : register(t0);
@@ -462,15 +462,22 @@ float4 main(float4 position : SV_Position) : SV_Target
         a = t2.Load(int3(p, 0));
         s = t3.Load(int3(p, 0)).x;
     }
+    // The pass does not know what is a character. Faces are small, curved and near the camera (view z 1-4 in the
+    // close-ups of the cutscenes), where the AO, the contact shadow and the indirect light of the whole head and
+    // body turn them into plasticine; floors and walls of those shots are farther (z > 5), and the shadow under
+    // Crash in the village is at z 4.5-7.5. So the three fade out below shadowParams.w (full strength from it, none from half of it).
+    float nearK = shadowParams.w > 0.0 ? smoothstep(0.5 * shadowParams.w, shadowParams.w, z) : 1.0;
     float ao = 1.0;
     if (control.x & FLAG_AO)
     {
         ao = lerp(1.0, a.a, aoParams.z);
+        ao = lerp(1.0, ao, nearK);
         // Bright pixels (emissive, highlights, the sun on a wall) keep most of their light.
         float bright = smoothstep(0.75, 1.0, max(c.r, max(c.g, c.b)));
         ao = lerp(ao, 1.0, 0.6 * bright);
     }
-    float3 indirect = (control.x & FLAG_IL) ? a.rgb * aoParams.w : 0.0;
+    s = lerp(1.0, s, nearK);
+    float3 indirect = (control.x & FLAG_IL) ? a.rgb * aoParams.w * nearK : 0.0;
     if (control.x & FLAG_SHOW_AO)
         return float4(ao.xxx, c.a);
     if (control.x & FLAG_SHOW_IL)
@@ -527,6 +534,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
             float shadowStrength = 0.5f;
             float fade = 90.0f;           // everything fades out from 0.6x to 1x this view distance
             float sky = 0.9f;             // fraction of the far plane counted as sky
+            float nearFade = 5.5f;        // AO, contact shadow and indirect light fade out below this view distance (none below half of it)
         } g_tuning;
 
         bool g_ready = false;
@@ -576,7 +584,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
                     { "radius", &g_tuning.radius }, { "thickness", &g_tuning.thickness }, { "ao_low", &g_tuning.aoLow },
                     { "ao_high", &g_tuning.aoHigh }, { "gi", &g_tuning.gi }, { "shadow_length", &g_tuning.shadowLength },
                     { "shadow_thickness", &g_tuning.shadowThickness }, { "shadow", &g_tuning.shadowStrength }, { "fade", &g_tuning.fade },
-                    { "sky", &g_tuning.sky },
+                    { "sky", &g_tuning.sky }, { "near", &g_tuning.nearFade },
                 };
                 bool known = false;
                 for (auto& field : fields)
@@ -881,6 +889,7 @@ float4 main(uint id : SV_VertexID) : SV_Position
         constants.shadowParams[0] = g_tuning.shadowLength;
         constants.shadowParams[1] = g_tuning.shadowThickness;
         constants.shadowParams[2] = g_tuning.fade;
+        constants.shadowParams[3] = g_tuning.nearFade;
 
         static const bool noTemporal = getenv("CRASH_LIGHTING_NO_TEMPORAL") != nullptr;  // debug: no accumulation
         static const uint32_t show = [] {
