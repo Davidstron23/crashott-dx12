@@ -170,6 +170,35 @@ env = { CRASH_NO_HID = "1", CRASH_SETTINGS = "video.antialiasing=smaa;lighting.s
 input = [["@cinematic_skipped"], [0.5, "SHOT"], ["@gameplay_ready"], [0.5, "SHOT"], [1, "LS", 0, 1, 2.5], [4, "SHOT"], [6, "START"], [7.5, "SHOT"], [9, "START"]]
 expect = { exit = ["timeout"], events = ["level_start", "level_ready", "cinematic", "cinematic_skipped", "cinematic_done", "gameplay_ready", "pause"], log_absent = ['\[fatal\]', '\[crash\]', 'falling back', 'Vulkan renderer on', 'could not create', 'failed to compile', 'DXIL NOT signed', 'are not drawn \(not translated\)', 'are not created \(not supported here\)', 'does not compile to DXIL', 'no pipeline for vs', 'anti-aliasing .* off', 'lighting remaster off', 'SMAA unavailable', 'lighting remaster unavailable'], log_contains = ['SkipToLevel, StartLevel 0 L1_E1', '\[gpu\] Direct3D 12 renderer on .+; shader cache .+', '\[gpu\] d3d12: \d+ submits, \d+ pass pipelines, [1-9]\d* draw pipelines, \d+ DXIL compiles \(0 failed\)', '\[gpu\] Direct3D 12: game shaders: \d+ compiled, \d+ from cache, 0 failed', '\[gpu\] SMAA ready', '\[lighting\] ready', '\[lighting\] targets', '\[lighting\] \d+ frames, [\d.]+ ms of GPU per frame'] }
 
+# Spec 012: the REMASTER light (all four options on) on the village in play and on the opening cutscene of L1_E1, to measure and fix the shadow
+# artifacts (005-p) and the plasticine faces (005-q). No `renderer` here: pass --set renderer=<api>. ORIGINAL, the debug views and the
+# switch-offs are made by merging this `env` (CRASH_SETTINGS, CRASH_LIGHTING_SHOW, CRASH_LIGHTING_TUNE, CRASH_LIGHTING_NO_TEMPORAL).
+[profiles.renderizador_luz_vila]
+description = "Luz REMASTER na vila (L1_E1 sem cena): capturas nos sítios das sombras feias (005-p); renderer por --set renderer=<api>"
+test = true
+timeout = 45
+audio = false
+userdata_mode = "copy"
+boot = "level:L1_E1"
+skip_cinematics = true
+env = { CRASH_NO_HID = "1", CRASH_SETTINGS = "lighting.ssao=high;lighting.gi=true;lighting.contact_shadows=true;lighting.soft_shadows=true" }
+input = [["@cinematic_skipped"], ["@gameplay_ready"], [5, "SHOT"], [5.5, "RS", 1, 0, 0.5], [7, "SHOT"], [7.5, "RS", -1, 0, 1], [9.5, "SHOT"], [10, "LS", 0, -1, 1.5], [12.5, "SHOT"], [13, "RS", 1, 0, 0.6], [15, "SHOT"], [15.5, "LS", 1, 0, 2], [18.5, "SHOT"], [19, "LS", 0, 1, 2], [22, "SHOT"]]
+# tools/parity.py (spec 012): the frames the lighting measure replays with other settings, the same game frame every time
+parity = ["gameplay_ready+5", "gameplay_ready+7", "gameplay_ready+9.5", "gameplay_ready+12.5", "gameplay_ready+15"]
+expect = { exit = ["timeout"], events = ["level_start", "level_ready", "cinematic", "cinematic_skipped", "cinematic_done", "gameplay_ready"], log_absent = ['\[fatal\]', '\[crash\]', 'lighting remaster off', 'lighting remaster unavailable'], log_contains = ['SkipToLevel, StartLevel 0 L1_E1', '\[lighting\] ready', '\[lighting\] \d+ frames, [\d.]+ ms of GPU per frame'] }
+
+[profiles.renderizador_luz_cinematica]
+description = "Luz REMASTER na cena de abertura de L1_E1 (sem pular, ~100 s): capturas nos primeiros planos de Coco e Tiny (005-q); renderer por --set renderer=<api>"
+test = true
+timeout = 80
+audio = false
+userdata_mode = "copy"
+boot = "level:L1_E1"
+env = { CRASH_NO_HID = "1", CRASH_SETTINGS = "lighting.ssao=high;lighting.gi=true;lighting.contact_shadows=true;lighting.soft_shadows=true" }
+input = [["@cinematic"], [10, "SHOT"], [20, "SHOT"], [30, "SHOT"], [50, "SHOT"], [60, "SHOT"]]
+parity = ["cinematic+10", "cinematic+20", "cinematic+30", "cinematic+50", "cinematic+60"]
+expect = { exit = ["timeout"], events = ["level_start", "level_ready", "cinematic"], log_absent = ['\[fatal\]', '\[crash\]', 'lighting remaster off', 'lighting remaster unavailable'], log_contains = ['SkipToLevel, StartLevel 0 L1_E1', '\[lighting\] ready', '\[lighting\] \d+ frames, [\d.]+ ms of GPU per frame'] }
+
 [profiles.renderizador_d3d12_falha_dispositivo]
 description = "CRASH_D3D12_FAIL=device: o Direct3D 12 falha de propósito e o jogo volta ao Vulkan na mesma janela"
 test = true
